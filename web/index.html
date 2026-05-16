@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paper Composer</title>
+    <link rel="icon" href="../assets/papericon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <img class="brand-mark" src="../assets/papericon.png" alt="" />
+        <div id="projectList" class="project-rail"></div>
+        <button class="add-project" id="addProject" title="新增專案">
+          <span class="ap-plus">+</span><span class="ap-label">新增專案</span>
+        </button>
+
+        <div class="sidebar-bottom">
+          <div class="sidebar-bottom-row">
+            <button class="project-icon" id="connectDrive" title="連線設定" aria-label="連線設定">⚙</button>
+            <button class="project-icon" id="openColorDialog" title="顏色設定" aria-label="顏色設定">🎨</button>
+          </div>
+          <div class="sync-status" id="driveStatus" title="同步狀態">
+            <span class="sync-dot" data-state="idle"></span>
+            <span class="sync-label" id="syncLabel">就緒</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-container">
+        <header class="header">
+          <nav id="sectionList" class="section-tabs"></nav>
+          <button class="tab add-tab" id="addSection" title="新增章節" aria-label="新增章節">+</button>
+          <div class="section-menu" id="sectionMenu" hidden>
+            <button type="button" data-section-template="Abstract">Abstract</button>
+            <button type="button" data-section-template="Introduction">Introduction</button>
+            <button type="button" data-section-template="Related works">Related works</button>
+            <button type="button" data-section-template="Method">Method</button>
+            <button type="button" data-section-template="Results">Results</button>
+            <button type="button" data-section-template="Discussion">Discussion</button>
+            <button type="button" data-section-template="Others">Others</button>
+          </div>
+          <button class="quiet-danger-button" id="removeSection" type="button">移除段落</button>
+        </header>
+
+        <section class="control-bar">
+          <label class="control-field grow">
+            <span>左側顯示</span>
+            <select id="leftDisplayField"></select>
+          </label>
+
+          <label class="control-field grow">
+            <span>右側顯示</span>
+            <select id="displayField"></select>
+          </label>
+        </section>
+
+        <section class="workspace-header">
+          <div>
+            <h1 id="sectionTitle">開始組裝</h1>
+            <p id="sectionSubtitle">同步 Drive 或按 + 新增素材。</p>
+          </div>
+          <button class="section-remove-button" id="exportMarkdown" type="button">匯出 MD</button>
+        </section>
+
+        <section class="material-toolbar">
+          <label class="control-field">
+            <span>新增素材</span>
+            <select id="materialKind">
+              <option value="Paper">Paper</option>
+              <option value="Algorithm">Algorithm</option>
+              <option value="Image">Image</option>
+              <option value="Table">Table</option>
+              <option value="Note">Note</option>
+            </select>
+          </label>
+          <label class="control-field source-picker">
+            <span>選擇論文 PDF</span>
+            <select id="pdfSource">
+              <option value="">尚未同步 Drive PDF</option>
+            </select>
+          </label>
+          <button class="primary-button icon-add-wide" id="addMaterial" title="新增素材" aria-label="新增素材">+</button>
+          <p class="drive-info" id="driveInfo">尚未設定 Drive</p>
+        </section>
+
+        <section id="blockList" class="content-area"></section>
+      </main>
+    </div>
+
+    <dialog id="newProjectDialog" class="modal">
+      <form method="dialog">
+        <div class="modal-header">
+          <h2>新增專案</h2>
+          <button class="icon-button" value="cancel">×</button>
+        </div>
+        <label>
+          <span>專案名稱</span>
+          <input id="npName" placeholder="我的研究專案" />
+        </label>
+        <label>
+          <span>Google Drive Folder ID</span>
+          <input id="npFolderId" placeholder="貼上 Drive 資料夾 ID" />
+        </label>
+        <p class="modal-note">app 會使用設定中的工作區總資料夾，並在底下建立同名專案資料夾。</p>
+        <div class="modal-actions">
+          <button class="secondary-button" id="cancelNewProject" value="cancel">取消</button>
+          <button class="primary-button" id="confirmNewProject" value="default">建立並同步</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="driveDialog" class="modal">
+      <form method="dialog">
+        <div class="modal-header">
+          <h2>Google Drive 設定</h2>
+          <button class="icon-button" value="cancel">×</button>
+        </div>
+        <p class="modal-note">每台裝置只要設定一次。已儲存的 Client Secret 可留空沿用。</p>
+        <label>
+          <span>Client ID</span>
+          <input id="clientId" placeholder="Google OAuth Client ID" />
+        </label>
+        <label>
+          <span>Client Secret</span>
+          <input id="clientSecret" type="password" placeholder="Google OAuth Client Secret" />
+        </label>
+        <label>
+          <span>工作區總資料夾</span>
+          <input id="workspaceRoot" placeholder="例如：/Users/你的帳號/Documents/PaperComposerProjects" />
+        </label>
+        <div class="modal-actions">
+          <button class="secondary-button" value="cancel">取消</button>
+          <button class="primary-button" id="saveDriveSettings" value="default">儲存並連線</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="colorDialog" class="modal">
+      <form method="dialog">
+        <div class="modal-header">
+          <h2>顏色設定</h2>
+          <button class="icon-button" value="cancel">×</button>
+        </div>
+        <p class="modal-note">改完即時預覽，按下「儲存」會寫入 <code>user_data/color.json</code>。</p>
+
+        <div class="preset-row">
+          <span class="preset-row-label">預設主題</span>
+          <div class="preset-chips" id="presetChips"></div>
+        </div>
+
+        <h3 class="color-section-title">底色</h3>
+        <div class="color-grid">
+          <label><span>左側專案區</span><input type="color" data-color-key="sidebar" /></label>
+          <label><span>上方段落區</span><input type="color" data-color-key="header" /></label>
+          <label><span>主面板底色</span><input type="color" data-color-key="main" /></label>
+          <label><span>素材左側</span><input type="color" data-color-key="cardLeft" /></label>
+          <label><span>素材右側</span><input type="color" data-color-key="cardRight" /></label>
+          <label><span>素材分隔線</span><input type="color" data-color-key="cardDivider" /></label>
+          <label><span>強調色（段落 / 選中素材）</span><input type="color" data-color-key="accent" /></label>
+          <label><span>新增素材按鈕</span><input type="color" data-color-key="addBtn" /></label>
+          <label><span>方格線顏色</span><input type="color" data-color-key="grid" /></label>
+          <label><span>方格透明度</span><input type="range" min="0" max="1" step="0.02" data-color-key="gridOpacity" /></label>
+          <label>
+            <span>方格形狀</span>
+            <select data-color-key="gridShape">
+              <option value="square">方格</option>
+              <option value="dots">點點</option>
+              <option value="triangle">三角形</option>
+              <option value="hexagon">六邊形</option>
+            </select>
+          </label>
+          <label><span>方格大小 (px)</span><input type="number" min="8" max="120" step="1" data-color-key="gridSize" /></label>
+        </div>
+
+        <h3 class="color-section-title">文字</h3>
+        <div class="color-grid">
+          <label><span>左側專案區文字</span><input type="color" data-color-key="sidebarText" /></label>
+          <label><span>上方段落區文字</span><input type="color" data-color-key="headerText" /></label>
+          <label><span>主面板文字</span><input type="color" data-color-key="mainText" /></label>
+          <label><span>素材左側文字</span><input type="color" data-color-key="cardLeftText" /></label>
+          <label><span>素材右側文字</span><input type="color" data-color-key="cardRightText" /></label>
+        </div>
+        <div class="modal-actions">
+          <button class="secondary-button" id="resetColors" type="button">重設預設值</button>
+          <button class="primary-button" id="saveColors" value="default">儲存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="exportDialog" class="modal">
+      <form method="dialog">
+        <div class="modal-header">
+          <h2 id="exportTitle">匯出 Markdown</h2>
+          <button class="icon-button" value="cancel">×</button>
+        </div>
+        <textarea id="exportMdContent" class="export-md" readonly></textarea>
+        <div class="modal-actions">
+          <button class="secondary-button" id="copyMd" type="button">複製</button>
+          <button class="primary-button" value="cancel">關閉</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="syncDialog" class="sync-modal">
+      <div class="sync-card">
+        <div class="sync-spinner"></div>
+        <h2 id="syncTitle">同步中</h2>
+        <p id="syncMessage">正在更新本地專案資料夾。</p>
+      </div>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
