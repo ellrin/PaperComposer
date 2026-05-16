@@ -788,6 +788,7 @@ async function confirmAddProject() {
     $("newProjectDialog").close();
     $("npName").value = "";
     $("npFolderId").value = "";
+    await syncDriveFolderIndex({ silent: true, noAlert: true });
   } catch (error) {
     alert("新增專案失敗：" + error.message);
   } finally {
@@ -1041,14 +1042,18 @@ function startAutoSync() {
     if (state.syncing) return;
     if (!state.activeProjectId) return;
     if (state.dirty) {
-      try { await saveNow(); } catch (_) {}
-      return;
+      try {
+        const saved = await saveNow();
+        if (!saved) return;
+      } catch (_) {
+        return;
+      }
     }
     const entry = activeEntry();
-    if (!entry || isLocalProject(entry)) return;
+    if (!entry) return;
     try {
       state.syncing = true;
-      setSyncStatus("syncing", "檢查 Drive…");
+      setSyncStatus("syncing", isLocalProject(entry) ? "檢查本地資料夾…" : "檢查 Drive…");
       await syncDriveFolderIndex({ silent: true, noAlert: true });
       setSyncStatus("synced", formatSyncedAt(new Date()));
     } catch (_) {
@@ -1056,7 +1061,7 @@ function startAutoSync() {
     } finally {
       state.syncing = false;
     }
-  }, 60_000);
+  }, 5_000);
 }
 
 function entryPayload(entry = activeEntry()) {

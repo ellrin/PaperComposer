@@ -453,7 +453,32 @@ fn add_project(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
             },
         );
     }
-    fs::create_dir_all(&local_path)?;
+    if let Err(err) = fs::create_dir_all(&local_path) {
+        return respond_json(
+            stream,
+            500,
+            &StatusResponse {
+                ok: false,
+                configured: true,
+                authenticated: true,
+                message: format!("無法建立本地專案資料夾 {}: {err}", local_path.display()),
+                settings_txt_path: None,
+            },
+        );
+    }
+    if !local_path.is_dir() {
+        return respond_json(
+            stream,
+            500,
+            &StatusResponse {
+                ok: false,
+                configured: true,
+                authenticated: true,
+                message: format!("本地專案資料夾建立後仍找不到：{}", local_path.display()),
+                settings_txt_path: None,
+            },
+        );
+    }
     let entry = ProjectEntry {
         project_id: project_id.clone(),
         project_name: req.project_name.clone(),
@@ -494,21 +519,33 @@ fn add_project(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
     let mut pdfs = Vec::new();
     let mut jsons = Vec::new();
     let mut project_data = empty_data;
+    let mut drive_warning: Option<String> = None;
     if let Ok(settings) = authenticated_settings(&data_dir) {
         let client = GoogleDriveRestClient::new(settings);
-        if let Ok((synced_data, synced_pdfs, synced_jsons)) = sync_project_workspace(&client, &data_dir, &entry) {
-            project_data = synced_data;
-            pdfs = synced_pdfs;
-            jsons = synced_jsons;
+        match sync_project_workspace(&client, &data_dir, &entry) {
+            Ok((synced_data, synced_pdfs, synced_jsons)) => {
+                project_data = synced_data;
+                pdfs = synced_pdfs;
+                jsons = synced_jsons;
+            }
+            Err(err) => {
+                drive_warning = Some(err.to_string());
+            }
         }
     }
+
+    let base_message = format!("已建立專案：{}（本地：{}）", req.project_name, local_path.display());
+    let message = match drive_warning {
+        Some(reason) => format!("{base_message}；Drive 同步失敗：{reason}"),
+        None => base_message,
+    };
 
     respond_json(
         stream,
         200,
         &SyncProjectResponse {
             ok: true,
-            message: format!("已建立專案: {}", req.project_name),
+            message,
             project_id,
             project_entry: entry,
             project_data,
@@ -976,6 +1013,9 @@ fn local_folder_index(stream: &mut TcpStream, query: &str) -> std::io::Result<()
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
+        if is_internal_workspace_file(&name) {
+            continue;
+        }
         let lower = name.to_lowercase();
         let modified = entry
             .metadata()
@@ -988,7 +1028,7 @@ fn local_folder_index(stream: &mut TcpStream, query: &str) -> std::io::Result<()
                     .unwrap_or_default()
             })
             .unwrap_or_default();
-        if lower.ends_with(".pdf") {
+        if is_local_pdf_file(&path, &name) {
             pdfs.push(DriveAsset {
                 id: path.to_string_lossy().into_owned(),
                 name,
@@ -1196,6 +1236,7 @@ fn sync_project_workspace(
                 "Drive project.json 是已刪除標記，略過同步",
             ));
         }
+        fs::remove_file(&probe).ok();
     }
     for file in &files {
         let lower = file.name.to_lowercase();
@@ -1220,7 +1261,7 @@ fn sync_project_workspace(
     data.project.folder_id = entry.folder_id.clone();
     save_project_data(data_dir, entry, &data)?;
 
-    let _ = upload_workspace_to_drive(client, data_dir, entry);
+    upload_workspace_to_drive(client, data_dir, entry)?;
 
     let (pdfs, jsons) = collect_local_assets(&workspace)?;
     Ok((data, pdfs, jsons))
@@ -1250,6 +1291,9 @@ fn upload_workspace_to_drive(
             continue;
         }
         let name = item.file_name().to_string_lossy().into_owned();
+        if is_internal_workspace_file(&name) {
+            continue;
+        }
         let lower = name.to_lowercase();
         if lower == "project.json" {
             client.upload_file_to_folder(&path, &entry.folder_id, &name, "application/json; charset=UTF-8")?;
@@ -1260,7 +1304,7 @@ fn upload_workspace_to_drive(
         }
         if lower.ends_with(".json") {
             client.upload_file_to_folder(&path, &entry.folder_id, &name, "application/json; charset=UTF-8")?;
-        } else if lower.ends_with(".pdf") {
+        } else if is_local_pdf_file(&path, &name) {
             client.upload_file_to_folder(&path, &entry.folder_id, &name, "application/pdf")?;
         }
     }
@@ -1334,9 +1378,12 @@ fn collect_local_assets(workspace: &PathBuf) -> std::io::Result<(Vec<DriveAsset>
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
+        if is_internal_workspace_file(&name) {
+            continue;
+        }
         let lower = name.to_lowercase();
         let modified = file_modified_rfc3339(&path);
-        if lower.ends_with(".pdf") {
+        if is_local_pdf_file(&path, &name) {
             pdfs.push(DriveAsset {
                 id: path.to_string_lossy().into_owned(),
                 name,
@@ -1368,6 +1415,21 @@ fn file_modified_rfc3339(path: &PathBuf) -> String {
         .and_then(|d| chrono::DateTime::<Utc>::from_timestamp(d.as_secs() as i64, 0))
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_default()
+}
+
+fn is_internal_workspace_file(name: &str) -> bool {
+    name.starts_with(".paper_composer_")
+}
+
+fn is_local_pdf_file(path: &PathBuf, name: &str) -> bool {
+    if name.to_lowercase().ends_with(".pdf") {
+        return true;
+    }
+    let mut header = [0_u8; 5];
+    fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map(|_| &header == b"%PDF-")
+        .unwrap_or(false)
 }
 
 fn sanitize_filename(name: &str) -> String {
