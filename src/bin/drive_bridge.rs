@@ -206,6 +206,7 @@ fn handle_stream(stream: &mut TcpStream) -> std::io::Result<()> {
         ("GET", "/colors") => colors_get(stream),
         ("POST", "/colors") => colors_post(stream, body),
         ("POST", "/open-file") => open_file(stream, body),
+        ("POST", "/delete-material") => delete_material(stream, body),
         ("GET", "/startup-sync") => startup_sync(stream),
         ("POST", "/upload-project") => upload_project(stream, body),
         ("GET", "/summary") => {
@@ -1494,6 +1495,84 @@ fn read_http_request(stream: &mut TcpStream) -> std::io::Result<String> {
 
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn delete_material(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
+    #[derive(Deserialize)]
+    struct Req {
+        project_id: String,
+        project_name: String,
+        folder_id: String,
+        local_path: String,
+        file_names: Vec<String>,
+    }
+    let req: Req = match serde_json::from_str(body) {
+        Ok(r) => r,
+        Err(err) => {
+            return respond_json(
+                stream,
+                400,
+                &serde_json::json!({"ok": false, "message": err.to_string()}),
+            );
+        }
+    };
+    let data_dir = default_data_dir();
+    let entry = project_entry(&req.project_id, &req.project_name, &req.folder_id, &req.local_path);
+    let workspace = project_workspace_dir(&data_dir, &entry);
+
+    let mut targets: Vec<String> = Vec::new();
+    for name in &req.file_names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() { continue; }
+        targets.push(trimmed.to_owned());
+        if let Some(stem) = std::path::Path::new(trimmed)
+            .file_stem()
+            .and_then(|s| s.to_str())
+        {
+            let companion = format!("{stem}.json");
+            if !targets.iter().any(|t| t.eq_ignore_ascii_case(&companion)) {
+                targets.push(companion);
+            }
+        }
+    }
+
+    let mut removed_local: Vec<String> = Vec::new();
+    for name in &targets {
+        let path = workspace.join(name);
+        if path.is_file() {
+            if fs::remove_file(&path).is_ok() {
+                removed_local.push(name.clone());
+            }
+        }
+    }
+
+    let mut trashed: Vec<String> = Vec::new();
+    if !entry.folder_id.starts_with("local:") {
+        if let Ok(settings) = authenticated_settings(&data_dir) {
+            let client = GoogleDriveRestClient::new(settings);
+            if let Ok(files) = client.list_files_in_folder(&entry.folder_id) {
+                for name in &targets {
+                    for file in &files {
+                        if file.name.eq_ignore_ascii_case(name) {
+                            if client.trash_file(&file.id).is_ok() {
+                                trashed.push(file.name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    respond_json(
+        stream,
+        200,
+        &serde_json::json!({
+            "ok": true,
+            "removed_local": removed_local,
+            "trashed_drive": trashed,
+        }),
+    )
 }
 
 fn open_file(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {

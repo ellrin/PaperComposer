@@ -32,3 +32,109 @@ Paper Composer 是一個本地優先的論文素材組裝工具。每個專案�
 ./Paper Composer.app
 ./dist/Paper Composer.app
 ```
+
+## Google Drive API 設定
+
+Paper Composer 需要 Google Drive API 來同步每個專案資料夾中的 PDF、JSON 與 `project.json`。第一次使用前，請先在 Google Cloud 建立 OAuth 憑證，並在 app 內填入設定。
+
+需要準備的值:
+
+```text
+Google OAuth Client ID
+Google OAuth Client Secret
+Google Drive Folder ID
+工作區總資料夾路徑
+```
+
+### 1. 建立或選擇 Google Cloud 專案
+
+進入 [Google Cloud Console](https://console.cloud.google.com/)，建立新專案，或選擇既有專案。
+
+### 2. 啟用 Google Drive API
+
+進入:
+
+```text
+APIs & Services > Library
+```
+
+搜尋 `Google Drive API`，點進去後按 `Enable`。
+
+### 3. 設定 OAuth Consent Screen
+
+進入:
+
+```text
+APIs & Services > OAuth consent screen
+```
+
+開發測試時可維持 `Testing`。基本欄位填:
+
+```text
+App name: Paper Composer
+User support email: 你的 Gmail
+Developer contact information: 你的 Gmail
+```
+
+測試階段請在 `Test users` 加入自己的 Gmail。
+
+### 4. 建立 OAuth Client
+
+進入:
+
+```text
+APIs & Services > Credentials > Create Credentials > OAuth client ID
+```
+
+應用程式類型選:
+
+```text
+Desktop app
+```
+
+建立後取得:
+
+```text
+Client ID
+Client Secret
+```
+
+### 5. 在 Paper Composer 填入設定
+
+開啟 app 後進入 Google Drive 設定，填入:
+
+```text
+Client ID
+Client Secret
+工作區總資料夾
+```
+
+`工作區總資料夾` 是本機用來存放所有專案資料夾的位置，例如:
+
+```text
+/Users/你的帳號/Documents/PaperComposerProjects
+```
+
+設定完成後，app 會開啟瀏覽器進行 Google OAuth 授權。授權成功後，token 會儲存在本機 `user_data/drive_settings.json`。
+
+### 6. 取得 Google Drive Folder ID
+
+每個 Paper Composer 專案會對應一個 Google Drive 資料夾。打開要同步的 Drive 資料夾，網址通常像:
+
+```text
+https://drive.google.com/drive/folders/1AbCDefGhijkLmNoPqRsTuvWxYz
+```
+
+`/folders/` 後面的字串就是 Folder ID:
+
+```text
+1AbCDefGhijkLmNoPqRsTuvWxYz
+```
+
+在 app 內新增專案時，將這個 Folder ID 貼到 `Google Drive Folder ID`。
+
+### 注意事項
+
+- `Client Secret` 與 `user_data/drive_settings.json` 不要提交到 GitHub。
+- 本專案的 `.gitignore` 已忽略 `user_data`，避免本機 token 被提交。
+- 如果 OAuth 失敗，請確認 OAuth Client 類型是 `Desktop app`，且自己的 Gmail 已加入 Test users。

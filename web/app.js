@@ -74,16 +74,16 @@ const sectionTemplates = {
 const bridgeUrl = "http://127.0.0.1:53683";
 
 const colorDefaults = {
-  sidebar: "#f7f2e2",
-  header: "#f5efe0",
+  sidebar: "#ede1bd",
+  header: "#f4ead0",
   main: "#fbf7ed",
   grid: "#46321e",
   gridOpacity: 0.18,
   gridShape: "square",
   gridSize: 28,
-  cardLeft: "#fffdf5",
+  cardLeft: "#f3ead2",
   cardRight: "#fffdf5",
-  cardDivider: "#c9bfa6",
+  cardDivider: "#a89766",
   accent: "#7c3aed",
   addBtn: "#7c3aed",
   sidebarText: "#1f2937",
@@ -95,82 +95,82 @@ const colorDefaults = {
 
 const colorPresets = [
   { key: "paper", label: "Paper Classic", colors: {
-    sidebar: "#f7f2e2", header: "#f5efe0", main: "#fbf7ed",
-    cardLeft: "#fffdf5", cardRight: "#fffdf5", cardDivider: "#c9bfa6",
+    sidebar: "#ede1bd", header: "#f4ead0", main: "#fbf7ed",
+    cardLeft: "#f3ead2", cardRight: "#fffdf5", cardDivider: "#a89766",
     accent: "#7c3aed", addBtn: "#7c3aed",
     grid: "#46321e", gridOpacity: 0.18, gridShape: "square", gridSize: 28,
     sidebarText: "#1f2937", headerText: "#1f2937", mainText: "#1f2937",
     cardLeftText: "#1f2937", cardRightText: "#1f2937",
   } },
   { key: "sunset", label: "Sunset Beach", colors: {
-    sidebar: "#fde2ce", header: "#fbd2b3", main: "#fff4e8",
-    cardLeft: "#fff8ef", cardRight: "#fff3e6", cardDivider: "#f59e0b",
-    accent: "#ea580c", addBtn: "#fb7185",
-    grid: "#c2410c", gridOpacity: 0.10, gridShape: "dots", gridSize: 24,
-    sidebarText: "#7c2d12", headerText: "#7c2d12", mainText: "#451a03",
-    cardLeftText: "#451a03", cardRightText: "#451a03",
+    sidebar: "#f8b489", header: "#fcd6b6", main: "#fff1de",
+    cardLeft: "#fbd2a8", cardRight: "#fff8ec", cardDivider: "#ea580c",
+    accent: "#dc2626", addBtn: "#fb7185",
+    grid: "#9a3412", gridOpacity: 0.12, gridShape: "dots", gridSize: 24,
+    sidebarText: "#451a03", headerText: "#7c2d12", mainText: "#451a03",
+    cardLeftText: "#7c2d12", cardRightText: "#451a03",
   } },
   { key: "forest", label: "Wood & Forest", colors: {
-    sidebar: "#e6e0c9", header: "#dcd4ba", main: "#efe9d4",
-    cardLeft: "#f7f3e3", cardRight: "#f1ecd9", cardDivider: "#8b7e5b",
-    accent: "#16a34a", addBtn: "#65a30d",
-    grid: "#5b4a2a", gridOpacity: 0.14, gridShape: "hexagon", gridSize: 30,
+    sidebar: "#bdb38a", header: "#d8cea4", main: "#f0ead2",
+    cardLeft: "#dfd6a9", cardRight: "#f7f3df", cardDivider: "#6b5d2e",
+    accent: "#15803d", addBtn: "#65a30d",
+    grid: "#3f3014", gridOpacity: 0.18, gridShape: "hexagon", gridSize: 30,
     sidebarText: "#1c2510", headerText: "#1c2510", mainText: "#1c2510",
     cardLeftText: "#1c2510", cardRightText: "#1c2510",
   } },
   { key: "lavender", label: "Soft Lavender", colors: {
-    sidebar: "#ebe5f5", header: "#e3dcf2", main: "#f5f1fc",
-    cardLeft: "#fbf8ff", cardRight: "#f7f3ff", cardDivider: "#c4b5e3",
-    accent: "#7c3aed", addBtn: "#6366f1",
-    grid: "#4c1d95", gridOpacity: 0.08, gridShape: "square", gridSize: 30,
+    sidebar: "#d4c3ef", header: "#e7dcf5", main: "#f3eefc",
+    cardLeft: "#ddcdf3", cardRight: "#fbf8ff", cardDivider: "#7c3aed",
+    accent: "#6d28d9", addBtn: "#6366f1",
+    grid: "#3b0764", gridOpacity: 0.12, gridShape: "square", gridSize: 30,
     sidebarText: "#3b0764", headerText: "#3b0764", mainText: "#1e1b4b",
     cardLeftText: "#1e1b4b", cardRightText: "#1e1b4b",
   } },
   { key: "mist", label: "Morning Mist", colors: {
-    sidebar: "#dfe7ee", header: "#d6e0e8", main: "#ecf2f6",
-    cardLeft: "#f5f9fc", cardRight: "#eff5f9", cardDivider: "#94a3b8",
-    accent: "#0ea5e9", addBtn: "#06b6d4",
-    grid: "#334155", gridOpacity: 0.10, gridShape: "triangle", gridSize: 30,
+    sidebar: "#a8b8c8", header: "#cbd6e2", main: "#e9eff5",
+    cardLeft: "#c4d2e0", cardRight: "#f7fafc", cardDivider: "#475569",
+    accent: "#0284c7", addBtn: "#06b6d4",
+    grid: "#1e293b", gridOpacity: 0.14, gridShape: "triangle", gridSize: 30,
     sidebarText: "#0f172a", headerText: "#0f172a", mainText: "#0f172a",
     cardLeftText: "#0f172a", cardRightText: "#0f172a",
   } },
   { key: "cityNight", label: "City Night", colors: {
-    sidebar: "#0f172a", header: "#1e293b", main: "#020617",
-    cardLeft: "#1e293b", cardRight: "#15233a", cardDivider: "#38bdf8",
+    sidebar: "#050a17", header: "#172238", main: "#020617",
+    cardLeft: "#1e293b", cardRight: "#0a1424", cardDivider: "#38bdf8",
     accent: "#f472b6", addBtn: "#22d3ee",
     grid: "#38bdf8", gridOpacity: 0.10, gridShape: "square", gridSize: 30,
     sidebarText: "#e2e8f0", headerText: "#e2e8f0", mainText: "#f1f5f9",
     cardLeftText: "#f1f5f9", cardRightText: "#f1f5f9",
   } },
   { key: "cyberpunk", label: "Cyber Punk", colors: {
-    sidebar: "#1a0626", header: "#0a0f1f", main: "#050510",
-    cardLeft: "#1a0a2e", cardRight: "#0a1428", cardDivider: "#f0abfc",
+    sidebar: "#260840", header: "#0c1430", main: "#06030e",
+    cardLeft: "#2a0e4a", cardRight: "#081226", cardDivider: "#f0abfc",
     accent: "#fde047", addBtn: "#ec4899",
     grid: "#e879f9", gridOpacity: 0.10, gridShape: "square", gridSize: 32,
     sidebarText: "#f0abfc", headerText: "#67e8f9", mainText: "#fde047",
     cardLeftText: "#f5d0fe", cardRightText: "#a5f3fc",
   } },
   { key: "midnightForest", label: "Midnight Forest", colors: {
-    sidebar: "#0c1f17", header: "#11261d", main: "#061410",
-    cardLeft: "#142d25", cardRight: "#11261d", cardDivider: "#5b8a73",
+    sidebar: "#08160e", header: "#15301f", main: "#040d08",
+    cardLeft: "#1c3d2c", cardRight: "#0c1f15", cardDivider: "#5b8a73",
     accent: "#84cc16", addBtn: "#ca8a04",
     grid: "#4ade80", gridOpacity: 0.08, gridShape: "hexagon", gridSize: 32,
     sidebarText: "#dcfce7", headerText: "#dcfce7", mainText: "#ecfccb",
     cardLeftText: "#ecfccb", cardRightText: "#dcfce7",
   } },
   { key: "carbon", label: "Carbon Studio", colors: {
-    sidebar: "#1f2937", header: "#111827", main: "#0b1220",
-    cardLeft: "#1f2937", cardRight: "#1a2330", cardDivider: "#4b5563",
+    sidebar: "#374151", header: "#1f2937", main: "#0a0e16",
+    cardLeft: "#374151", cardRight: "#111827", cardDivider: "#9ca3af",
     accent: "#f97316", addBtn: "#f97316",
-    grid: "#6b7280", gridOpacity: 0.08, gridShape: "square", gridSize: 28,
+    grid: "#6b7280", gridOpacity: 0.10, gridShape: "square", gridSize: 28,
     sidebarText: "#f3f4f6", headerText: "#f3f4f6", mainText: "#f9fafb",
     cardLeftText: "#f9fafb", cardRightText: "#f9fafb",
   } },
   { key: "deepOcean", label: "Deep Ocean", colors: {
-    sidebar: "#0c1a30", header: "#102540", main: "#050d1a",
-    cardLeft: "#112d4a", cardRight: "#0e2440", cardDivider: "#14b8a6",
-    accent: "#2dd4bf", addBtn: "#06b6d4",
-    grid: "#0891b2", gridOpacity: 0.10, gridShape: "triangle", gridSize: 32,
+    sidebar: "#08274d", header: "#0c365f", main: "#020a18",
+    cardLeft: "#0e3d68", cardRight: "#061f3a", cardDivider: "#2dd4bf",
+    accent: "#5eead4", addBtn: "#06b6d4",
+    grid: "#0891b2", gridOpacity: 0.12, gridShape: "triangle", gridSize: 32,
     sidebarText: "#cffafe", headerText: "#cffafe", mainText: "#e0f2fe",
     cardLeftText: "#e0f2fe", cardRightText: "#cffafe",
   } },
@@ -383,6 +383,14 @@ function renderProjects() {
       }
     };
   });
+  document.querySelectorAll("[data-delete-project]").forEach((node) => {
+    node.onclick = (event) => {
+      event.stopPropagation();
+      event.preventDefault();
+      const index = Number(node.dataset.deleteProject);
+      if (index >= 0 && index < state.projectsList.length) removeProjectAt(index);
+    };
+  });
 }
 
 function projectListHtml(entries, active) {
@@ -393,6 +401,7 @@ function projectListHtml(entries, active) {
           <span class="pi-badge">${escapeHtml(projectInitial(entry.project_name, index))}</span>
           <span class="pi-name">${escapeHtml(entry.project_name || `Project ${index + 1}`)}</span>
         </button>
+        <button class="project-delete" data-delete-project="${index}" title="刪除專案" aria-label="刪除專案">×</button>
       </div>
     `)
     .join("");
@@ -471,6 +480,7 @@ function setMaterialToolbarEnabled(enabled) {
     const node = $(id);
     if (node) node.disabled = !enabled;
   });
+  document.querySelector(".material-toolbar")?.classList.toggle("locked", !enabled);
 }
 
 function renderPdfSources() {
@@ -497,7 +507,9 @@ function renderPdfSources() {
 function renderBlocks() {
   const sec = section();
   if (!sec) {
-    $("blockList").innerHTML = "";
+    $("blockList").innerHTML = project()
+      ? `<section class="empty-hint"><h3>還沒有段落</h3><p>請點選上方「+ 新增段落」開始。</p></section>`
+      : "";
     return;
   }
   const blocks = sec.blocks;
@@ -871,44 +883,59 @@ async function removeProjectAt(index) {
 async function removeSectionAt(index) {
   const sec = project()?.sections?.[index];
   if (!sec) return;
-  if (!confirm("移除段落會將該所有的素材移除")) return;
+  if (!confirm("移除段落會將該所有的素材移除（含 Drive 上對應的 PDF/JSON）")) return;
   const [removedSection] = project().sections.splice(index, 1);
+  const files = [];
   for (const block of removedSection.blocks || []) {
-    removeUnusedMaterial(block);
+    const name = removeUnusedMaterial(block);
+    if (name) files.push(name);
   }
   state.sectionIndex = Math.max(0, Math.min(state.sectionIndex, project().sections.length - 1));
   render();
-  if (await saveNow(false)) {
-    await syncDriveFolderIndex({ silent: true });
-  }
+  await deleteMaterialFiles(files);
+  if (await saveNow()) await syncDriveFolderIndex({ silent: true, noAlert: true });
 }
 
 function removeBlock(blockId) {
   const index = section().blocks.findIndex((block) => block.block_id === blockId);
   if (index < 0) return;
   const material = findMaterial(section().blocks[index]);
-  if (!confirm(`移除素材「${materialDisplayName(material, "name")}」？`)) return;
+  if (!confirm(`移除素材「${materialDisplayName(material, "name")}」？(Drive 上的對應檔也會一起刪)`)) return;
   const [block] = section().blocks.splice(index, 1);
-  removeUnusedMaterial(block);
+  const removedFile = removeUnusedMaterial(block);
   render();
-  saveNow(false).then((ok) => {
-    if (ok) syncDriveFolderIndex({ silent: true });
-  });
+  (async () => {
+    if (removedFile) await deleteMaterialFiles([removedFile]);
+    if (await saveNow()) await syncDriveFolderIndex({ silent: true, noAlert: true });
+  })();
 }
 
 function removeUnusedMaterial(block) {
   const data = currentProjectData();
-  if (!data) return;
+  if (!data) return null;
   const stillUsed = data.project.sections.some((sectionItem) =>
     sectionItem.blocks.some((item) => item.source_id === block.source_id)
   );
-  if (stillUsed) return;
+  if (stillUsed) return null;
   const listName = block.block_type.toLowerCase() + "s";
   const list = data[listName] ?? data.notes;
-  const index = list.findIndex((item) => item.id === block.source_id);
-  if (index >= 0) {
-    list.splice(index, 1);
-  }
+  const idx = list.findIndex((item) => item.id === block.source_id);
+  if (idx < 0) return null;
+  const [removed] = list.splice(idx, 1);
+  return removed?.file_path || removed?.metadata?.file_name || null;
+}
+
+async function deleteMaterialFiles(fileNames) {
+  const names = (fileNames || []).filter(Boolean);
+  if (!names.length) return;
+  const entry = activeEntry();
+  if (!entry) return;
+  try {
+    await bridgeFetch("/delete-material", {
+      method: "POST",
+      body: JSON.stringify({ ...entryPayload(entry), file_names: names }),
+    });
+  } catch (_) { /* best-effort */ }
 }
 
 function bindBlockDrag(blocks) {

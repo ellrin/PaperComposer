@@ -13,17 +13,17 @@
   --paper-hover: #fff8e6;
 
   /* user-customizable surfaces (overridden at runtime from color.json) */
-  --c-sidebar-bg: #f7f2e2;
-  --c-header-bg: #f5efe0;
+  --c-sidebar-bg: #ede1bd;
+  --c-header-bg: #f4ead0;
   --c-main-bg: #fbf7ed;
   --c-grid-color: rgba(70, 50, 20, 0.18);
   --c-grid-size: 28px;
   --c-grid-image:
     linear-gradient(90deg, var(--c-grid-color) 1px, transparent 1px),
     linear-gradient(0deg, var(--c-grid-color) 1px, transparent 1px);
-  --c-card-left-bg: #fffdf5;
+  --c-card-left-bg: #f3ead2;
   --c-card-right-bg: #fffdf5;
-  --c-card-divider: #c9bfa6;
+  --c-card-divider: #a89766;
   --c-accent: #7c3aed;
   --c-add-btn: #7c3aed;
   --c-sidebar-text: #1f2937;
@@ -1235,3 +1235,48 @@ select:disabled {
   .project-icon .pi-name { display: none; }
   .project-icon { justify-content: center; padding: 8px; }
 }
+
+/* Section-locked material toolbar: dim + non-interactive */
+.material-toolbar.locked {
+  opacity: 0.45;
+  pointer-events: none;
+  filter: grayscale(0.6);
+}
+
+/* Hover-only × on project icons in the sidebar */
+.project-slot { position: relative; }
+
+.project-delete {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  z-index: 2;
+}
+
+.project-slot:hover .project-delete { opacity: 0.85; }
+.project-delete:hover { opacity: 1; }
+
+/* Empty-state hint inside blockList */
+.empty-hint {
+  max-width: 520px;
+  margin: 32px auto 0;
+  padding: 24px;
+  border: 1px dashed var(--paper-rule);
+  border-radius: 12px;
+  color: var(--ink-dim);
+  text-align: center;
+  background: rgba(255, 253, 245, 0.4);
+}
+
