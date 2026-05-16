@@ -2,6 +2,17 @@
 
 Paper Composer 是一個本地優先的論文素材組裝工具。每個專案都對應一個 Google Drive 資料夾，並放在工作區總資料夾下的一個專案子資料夾。
 
+![Paper Composer preview](image/cover.png)
+
+## 使用方式
+
+1. 先在 Google Drive 設定中填入 OAuth Client ID、Client Secret 與本機工作區總資料夾。
+2. 按 `新增專案`，填入專案名稱與對應的 Google Drive Folder ID；app 會在工作區中建立本地專案資料夾，並同步 Drive 內的 PDF / JSON。
+3. 在上方新增段落，例如 Introduction、Related works、Method 或 Results。
+4. 在 `選擇論文 PDF` 選取同步到本地的論文，按 `+` 新增為素材；也可以新增 Algorithm、Image、Table、Note 等文字素材。
+5. 點擊素材卡片左右欄位可直接編輯內容；左側/右側顯示欄位可切換成檔名、簡稱、年份或各段落需要的內容欄位。
+6. 編輯後按素材卡片上的 `儲存`，內容會寫入本地 `project.json`，並同步回 Google Drive；PDF 會保留在 Drive 與本地專案資料夾中。
+
 ## Data Model
 
 - `user_data/drive_settings.json`: 本機 Google OAuth 設定與 token。
