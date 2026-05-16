@@ -89,7 +89,7 @@ APIs & Services > Credentials > Create Credentials > OAuth client ID
 應用程式類型選:
 
 ```text
-Desktop app
+網頁應用程式
 ```
 
 建立後取得:
