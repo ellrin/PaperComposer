@@ -450,7 +450,7 @@ function renderControls() {
     $("sectionTitle").contentEditable = "false";
     $("sectionSubtitle").textContent = "";
     $("leftDisplayField").innerHTML = optionsHtml;
-    $("leftDisplayField").value = "short_name";
+    $("leftDisplayField").value = "file_name";
     $("displayField").innerHTML = optionsHtml;
     $("displayField").value = paperFields[0];
     $("removeSection").hidden = true;
@@ -468,7 +468,7 @@ function renderControls() {
     : "同步 Drive 或按 + 新增素材。";
   const validValues = new Set(opts.map((o) => o.value));
   $("leftDisplayField").innerHTML = optionsHtml;
-  $("leftDisplayField").value = validValues.has(sec.left_display_field) ? sec.left_display_field : "short_name";
+  $("leftDisplayField").value = validValues.has(sec.left_display_field) ? sec.left_display_field : "file_name";
   $("displayField").innerHTML = optionsHtml;
   const fallbackRight = sec.section_type === "Method" ? algorithmFields[0] : paperFields[0];
   $("displayField").value = validValues.has(sec.display_field) ? sec.display_field : fallbackRight;
@@ -543,7 +543,7 @@ function renderBlocks() {
       if (!material) return;
       const sec = section();
       const field = node.dataset.blockSide === "left"
-        ? (sec.left_display_field || "short_name")
+        ? (sec.left_display_field || "file_name")
         : (sec.display_field || "概述");
       setFieldValue(material, field, node.value);
       markDirty();
@@ -597,7 +597,7 @@ async function openLocalPdf(blockId) {
 function blockCardHtml(block, index) {
   const material = findMaterial(block);
   const sec = section();
-  const leftField = sec.left_display_field || "short_name";
+  const leftField = sec.left_display_field || "file_name";
   const rightField = sec.display_field || "概述";
   const leftValue = getFieldValue(material, leftField);
   const rightValue = getFieldValue(material, rightField);
@@ -826,7 +826,7 @@ function addSectionFromTemplate(title) {
     idx: proj.sections.length + 1,
     title,
     section_type: template.type,
-    left_display_field: "short_name",
+    left_display_field: "file_name",
     source_folder: "",
     display_field: template.field,
     sort_rules: [],
@@ -834,6 +834,7 @@ function addSectionFromTemplate(title) {
   });
   state.sectionIndex = proj.sections.length - 1;
   normalizeOrder();
+  markDirty();
   render();
   saveNow(true);
 }
@@ -883,16 +884,13 @@ async function removeProjectAt(index) {
 async function removeSectionAt(index) {
   const sec = project()?.sections?.[index];
   if (!sec) return;
-  if (!confirm("移除段落會將該所有的素材移除（含 Drive 上對應的 PDF/JSON）")) return;
+  if (!confirm(`移除段落「${sec.title}」？素材檔案不會刪除。`)) return;
   const [removedSection] = project().sections.splice(index, 1);
-  const files = [];
   for (const block of removedSection.blocks || []) {
-    const name = removeUnusedMaterial(block);
-    if (name) files.push(name);
+    removeUnusedMaterial(block);
   }
   state.sectionIndex = Math.max(0, Math.min(state.sectionIndex, project().sections.length - 1));
   render();
-  await deleteMaterialFiles(files);
   if (await saveNow()) await syncDriveFolderIndex({ silent: true, noAlert: true });
 }
 
@@ -900,12 +898,11 @@ function removeBlock(blockId) {
   const index = section().blocks.findIndex((block) => block.block_id === blockId);
   if (index < 0) return;
   const material = findMaterial(section().blocks[index]);
-  if (!confirm(`移除素材「${materialDisplayName(material, "name")}」？(Drive 上的對應檔也會一起刪)`)) return;
+  if (!confirm(`移除素材「${materialDisplayName(material, "name")}」？素材檔案不會刪除。`)) return;
   const [block] = section().blocks.splice(index, 1);
-  const removedFile = removeUnusedMaterial(block);
+  removeUnusedMaterial(block);
   render();
   (async () => {
-    if (removedFile) await deleteMaterialFiles([removedFile]);
     if (await saveNow()) await syncDriveFolderIndex({ silent: true, noAlert: true });
   })();
 }
@@ -921,21 +918,8 @@ function removeUnusedMaterial(block) {
   const list = data[listName] ?? data.notes;
   const idx = list.findIndex((item) => item.id === block.source_id);
   if (idx < 0) return null;
-  const [removed] = list.splice(idx, 1);
-  return removed?.file_path || removed?.metadata?.file_name || null;
-}
-
-async function deleteMaterialFiles(fileNames) {
-  const names = (fileNames || []).filter(Boolean);
-  if (!names.length) return;
-  const entry = activeEntry();
-  if (!entry) return;
-  try {
-    await bridgeFetch("/delete-material", {
-      method: "POST",
-      body: JSON.stringify({ ...entryPayload(entry), file_names: names }),
-    });
-  } catch (_) { /* best-effort */ }
+  list.splice(idx, 1);
+  return true;
 }
 
 function bindBlockDrag(blocks) {
@@ -1132,7 +1116,7 @@ function touchProjectData(data) {
     if (!material.metadata.short_name && material.name) material.metadata.short_name = material.name;
   }
   for (const sec of data.project?.sections || []) {
-    if (!sec.left_display_field) sec.left_display_field = "short_name";
+    if (!sec.left_display_field) sec.left_display_field = "file_name";
     if (!sec.source_folder) sec.source_folder = "";
     if (!sec.sort_rules) sec.sort_rules = [];
     for (const block of sec.blocks || []) {
@@ -1149,7 +1133,7 @@ function exportSectionMarkdown(data, sec) {
   const lines = [`## ${sec.title}`, ""];
   for (const block of sec.blocks || []) {
     const material = findMaterialInData(data, block);
-    const title = materialDisplayName(material, sec.left_display_field || "short_name");
+    const title = materialDisplayName(material, sec.left_display_field || "file_name");
     const content = material?.fields?.[sec.display_field] || "";
     lines.push(`### ${title}`, "", content, "");
   }
@@ -1407,7 +1391,7 @@ async function syncDriveFolderIndex(options = {}) {
       const idx = state.projectsList.findIndex((item) => item.project_id === result.project_entry.project_id);
       if (idx >= 0) state.projectsList[idx] = result.project_entry;
     }
-    if (result.project_data) {
+    if (result.project_data && !state.dirty) {
       state.projectsData[entry.project_id] = result.project_data;
     }
     state.driveMessage = result.message;

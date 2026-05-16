@@ -338,6 +338,7 @@ button {
 
 .section-tabs {
   min-width: 0;
+  flex: 0 1 auto;
   max-width: calc(100% - 260px);
   display: flex;
   align-items: stretch;
@@ -484,6 +485,11 @@ button {
   border: 1px solid var(--paper-edge);
   color: var(--ink-dim);
   background: rgba(255, 253, 245, 0.6);
+}
+
+.header .quiet-danger-button {
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 .quiet-danger-button:hover {
@@ -825,8 +831,8 @@ select:focus, input:focus, textarea:focus {
   border: 1px solid var(--paper-rule);
   border-radius: 10px;
   background: var(--c-card-right-bg);
-  box-shadow: var(--shadow-md);
-  transition: transform 120ms ease, box-shadow 120ms ease;
+  box-shadow: var(--shadow-sm);
+  transition: transform 120ms ease;
 }
 
 .material-card::before {
@@ -848,7 +854,6 @@ select:focus, input:focus, textarea:focus {
 
 .material-card:hover {
   transform: translateY(-1px);
-  box-shadow: var(--shadow-lg);
 }
 
 .material-card.dragging {
@@ -881,6 +886,10 @@ select:focus, input:focus, textarea:focus {
   line-height: 1.55;
   font-weight: 400;
   overflow-y: auto;
+}
+
+.material-card .card-field:focus {
+  box-shadow: none;
 }
 
 .material-card .card-field-left {
@@ -1279,4 +1288,3 @@ select:disabled {
   text-align: center;
   background: rgba(255, 253, 245, 0.4);
 }
-

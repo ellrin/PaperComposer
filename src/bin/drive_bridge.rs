@@ -942,17 +942,8 @@ fn delete_project(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
                 );
             }
         };
-        if let Err(err) = write_project_tombstone(&data_dir, &entry)
-            .and_then(|path| {
-                let client = GoogleDriveRestClient::new(settings);
-                client.upload_file_to_folder(
-                    &path,
-                    &entry.folder_id,
-                    "project.json",
-                    "application/json; charset=UTF-8",
-                )
-            })
-        {
+        let client = GoogleDriveRestClient::new(settings);
+        if let Err(err) = client.trash_json_files_in_folder(&entry.folder_id) {
             return respond_json(
                 stream,
                 500,
@@ -960,7 +951,7 @@ fn delete_project(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
                     ok: false,
                     configured: true,
                     authenticated: true,
-                    message: format!("移除專案失敗，空 JSON 尚未覆蓋 Drive: {err}"),
+                    message: format!("移除專案失敗，Drive JSON 尚未刪除: {err}"),
                     settings_txt_path: None,
                 },
             );
@@ -987,7 +978,7 @@ fn delete_project(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
             ok: true,
             configured: false,
             authenticated: false,
-            message: "已移除本地專案資料夾，Drive PDF 保留，空 JSON 已覆蓋 Drive".to_owned(),
+            message: "已移除本地專案資料夾，Drive JSON 已刪除，Drive PDF 保留".to_owned(),
             settings_txt_path: None,
         },
     )
@@ -1312,32 +1303,6 @@ fn upload_workspace_to_drive(
     Ok(())
 }
 
-fn write_project_tombstone(data_dir: &PathBuf, entry: &ProjectEntry) -> std::io::Result<PathBuf> {
-    let workspace = project_workspace_dir(data_dir, entry);
-    if workspace.exists() {
-        for item in fs::read_dir(&workspace)? {
-            let path = item?.path();
-            if path.is_dir() {
-                fs::remove_dir_all(path)?;
-            } else {
-                fs::remove_file(path)?;
-            }
-        }
-    } else {
-        fs::create_dir_all(&workspace)?;
-    }
-    let path = workspace.join("project.json");
-    let tombstone = serde_json::json!({
-        "paper_composer_deleted": true,
-        "project_id": entry.project_id,
-        "project_name": entry.project_name,
-        "folder_id": entry.folder_id,
-        "deleted_at": Utc::now().to_rfc3339()
-    });
-    fs::write(&path, serde_json::to_string_pretty(&tombstone)?)?;
-    Ok(path)
-}
-
 fn is_project_tombstone(path: &PathBuf) -> bool {
     fs::read_to_string(path)
         .ok()
@@ -1498,79 +1463,21 @@ fn find_header_end(bytes: &[u8]) -> Option<usize> {
 }
 
 fn delete_material(stream: &mut TcpStream, body: &str) -> std::io::Result<()> {
-    #[derive(Deserialize)]
-    struct Req {
-        project_id: String,
-        project_name: String,
-        folder_id: String,
-        local_path: String,
-        file_names: Vec<String>,
+    if let Err(err) = serde_json::from_str::<serde_json::Value>(body) {
+        return respond_json(
+            stream,
+            400,
+            &serde_json::json!({"ok": false, "message": err.to_string()}),
+        );
     }
-    let req: Req = match serde_json::from_str(body) {
-        Ok(r) => r,
-        Err(err) => {
-            return respond_json(
-                stream,
-                400,
-                &serde_json::json!({"ok": false, "message": err.to_string()}),
-            );
-        }
-    };
-    let data_dir = default_data_dir();
-    let entry = project_entry(&req.project_id, &req.project_name, &req.folder_id, &req.local_path);
-    let workspace = project_workspace_dir(&data_dir, &entry);
-
-    let mut targets: Vec<String> = Vec::new();
-    for name in &req.file_names {
-        let trimmed = name.trim();
-        if trimmed.is_empty() { continue; }
-        targets.push(trimmed.to_owned());
-        if let Some(stem) = std::path::Path::new(trimmed)
-            .file_stem()
-            .and_then(|s| s.to_str())
-        {
-            let companion = format!("{stem}.json");
-            if !targets.iter().any(|t| t.eq_ignore_ascii_case(&companion)) {
-                targets.push(companion);
-            }
-        }
-    }
-
-    let mut removed_local: Vec<String> = Vec::new();
-    for name in &targets {
-        let path = workspace.join(name);
-        if path.is_file() {
-            if fs::remove_file(&path).is_ok() {
-                removed_local.push(name.clone());
-            }
-        }
-    }
-
-    let mut trashed: Vec<String> = Vec::new();
-    if !entry.folder_id.starts_with("local:") {
-        if let Ok(settings) = authenticated_settings(&data_dir) {
-            let client = GoogleDriveRestClient::new(settings);
-            if let Ok(files) = client.list_files_in_folder(&entry.folder_id) {
-                for name in &targets {
-                    for file in &files {
-                        if file.name.eq_ignore_ascii_case(name) {
-                            if client.trash_file(&file.id).is_ok() {
-                                trashed.push(file.name.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     respond_json(
         stream,
         200,
         &serde_json::json!({
             "ok": true,
-            "removed_local": removed_local,
-            "trashed_drive": trashed,
+            "message": "素材檔案保留；只會透過 project.json 移除素材引用",
+            "removed_local": [],
+            "trashed_drive": [],
         }),
     )
 }
