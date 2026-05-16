@@ -1,33 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const PAPER_FIELDS: [&str; 12] = [
-    "概述",
-    "心得",
-    "核心貢獻",
-    "關鍵內容",
-    "可放入 Introduction 的角度",
-    "可放入 Related Work 的角度",
-    "方法摘要",
-    "資料集摘要",
-    "結果摘要",
-    "限制",
-    "與本研究的關係",
-    "可引用句子",
-];
-
-pub const ALGORITHM_FIELDS: [&str; 9] = [
-    "公式",
-    "描述",
-    "公式與描述",
-    "輸入",
-    "輸出",
-    "使用原因",
-    "限制",
-    "LaTeX 原始碼",
-    "與本研究的關係",
-];
-
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 pub enum SectionType {
     Literature,

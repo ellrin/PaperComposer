@@ -1,21 +1,17 @@
 const paperFields = [
-  "概述",
+  "描述",
   "心得",
-  "核心貢獻",
   "關鍵內容",
-  "可放入 Introduction 的角度",
-  "可放入 Related Work 的角度",
   "方法摘要",
   "資料集摘要",
   "結果摘要",
   "限制",
   "與本研究的關係",
-  "可引用句子",
   "英文",
   "cite",
 ];
 
-const algorithmFields = ["公式", "描述", "公式與描述", "輸入", "輸出", "使用原因", "限制", "與本研究的關係"];
+const algorithmFields = ["公式", "描述", "心得", "關鍵內容", "輸入", "輸出", "使用原因", "限制", "與本研究的關係", "英文"];
 const metadataFieldOptions = [
   { value: "short_name", label: "簡稱" },
   { value: "file_name", label: "檔名" },
