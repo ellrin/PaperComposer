@@ -31,18 +31,57 @@ Paper Composer 是一個本地優先的論文素材組裝工具。每個專案�
 - JSON 會以 Drive 最新內容更新到本地。
 - 儲存素材時會寫入本地 `project.json`，再把本地資料夾內的 PDF / JSON 上傳或更新到 Drive。
 
-## Build
+## Build / Install
+
+### Requirements
+
+- Rust `1.86.0` or newer. This project is currently tested with Rust `1.95.0`.
+- Windows builds require Microsoft Edge WebView2 Runtime. It is already installed on most Windows 10/11 machines.
+- macOS builds require Xcode Command Line Tools because the app shell is compiled with `swiftc`.
+
+Update Rust with:
+
+```bash
+rustup update stable
+rustup default stable
+rustc --version
+```
+
+### macOS app
 
 ```bash
 ./scripts/build_macos_app.sh
 ```
 
-輸出位置:
+Output:
 
 ```text
 ./Paper Composer.app
 ./dist/Paper Composer.app
 ```
+
+### Windows app
+
+Run in PowerShell:
+
+```powershell
+.\scripts\package_windows.ps1
+```
+
+Output:
+
+```text
+.\dist\windows\Paper Composer\Paper Composer.exe
+.\dist\windows\PaperComposer-windows.zip
+```
+
+Install for the current Windows user:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ".\dist\windows\Paper Composer\install.ps1"
+```
+
+The Windows app uses WebView2 for the native window, starts `drive_bridge.exe` automatically, and stops the bridge when the app window closes.
 
 ## Google Drive API 設定
 
