@@ -1,6 +1,6 @@
 # Paper Composer
 
-Paper Composer 是一個本地優先的論文素材組裝工具。每個專案都對應一個 Google Drive 資料夾，並放在工作區總資料夾下的一個專案子資料夾。
+Paper Composer 是以 Google Drive 為主要同步對象的論文撰寫工具。每個專案都對應一個 Google Drive 資料夾，並放在工作區總資料夾下的一個專案子資料夾。使用時須建立 google drive api，並完成 google drive api 所要求的安全性設定、email 綁定等，在取得 ID、金鑰後輸入 Paper Composer 後可使用。
 
 ![Paper Composer preview](image/cover.png)
 
@@ -13,6 +13,8 @@ Paper Composer 是一個本地優先的論文素材組裝工具。每個專案�
 5. 點擊素材卡片左右欄位可直接編輯內容；左側/右側顯示欄位可切換成檔名、簡稱、年份或各段落需要的內容欄位。
 6. 編輯後按素材卡片上的 `儲存`，內容會寫入本地 `project.json`，並同步回 Google Drive；PDF 會保留在 Drive 與本地專案資料夾中。
 
+
+
 ## Data Model
 
 - `user_data/drive_settings.json`: 本機 Google OAuth 設定與 token。
@@ -22,6 +24,31 @@ Paper Composer 是一個本地優先的論文素材組裝工具。每個專案�
   - `project.json`: 章節、素材、顯示欄位與編輯內容。
   - `*.pdf`: 從 Drive 同步下來或本地新增的 PDF。
   - `*.json`: 從 Drive 同步下來或本地新增的素材 JSON。
+ 
+## Folder Structure
+
+### Google Drive
+
+```text
+Google Drive
+└── paper_project_folder/                 # 使用者自行建立，並將 Folder ID 填入 app
+    ├── 01.pdf                            # 使用者自行放入，app 會同步到本地
+    ├── 02.pdf                            # 使用者自行放入，app 會同步到本地
+    ├── 03.pdf                            # 使用者自行放入，app 會同步到本地
+    └── project.json                      # app 自動建立或同步，用來保存專案資料
+```
+
+### Local Workspace
+
+```text
+指定本機工作區路徑/
+└── PaperComposerWorkspace/               # 使用者自行指定
+    └── project_name_01/                  # app 依專案名稱自動建立
+        ├── 01.pdf                        # app 從 Google Drive 自動同步
+        ├── 02.pdf                        # app 從 Google Drive 自動同步
+        ├── 03.pdf                        # app 從 Google Drive 自動同步
+        └── project.json                  # app 自動建立或同步，用來保存專案資料
+```
 
 ## Sync Rules
 
