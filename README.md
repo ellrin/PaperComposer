@@ -60,55 +60,109 @@ Google Drive
 
 ## Build / Install
 
-### Requirements
+### Windows
 
-- Rust `1.86.0` or newer. This project is currently tested with Rust `1.95.0`.
-- Windows builds require Microsoft Edge WebView2 Runtime. It is already installed on most Windows 10/11 machines.
-- macOS builds require Xcode Command Line Tools because the app shell is compiled with `swiftc`.
+#### 1. 安裝 Rust
 
-Update Rust with:
+前往 [https://rustup.rs](https://rustup.rs)，下載並執行 `rustup-init.exe`，依照提示完成安裝。
 
-```bash
-rustup update stable
-rustup default stable
+安裝時若詢問 linker，請選擇預設選項（`msvc`）。這需要 Visual Studio C++ 編譯工具；如果尚未安裝，rustup 會顯示提示，可前往 [Visual Studio 下載頁](https://visualstudio.microsoft.com/visual-cpp-build-tools/) 安裝 **Build Tools for Visual Studio**，勾選 `Desktop development with C++`。
+
+安裝完成後開啟新的 PowerShell 視窗，確認版本：
+
+```powershell
 rustc --version
 ```
 
-### macOS app
+需要 `1.86.0` 以上，本專案以 `1.95.0` 測試。
 
-```bash
-./scripts/build_macos_app.sh
+日後更新 Rust：
+
+```powershell
+rustup update stable
+rustup default stable
 ```
 
-Output:
+#### 2. WebView2 Runtime
 
-```text
-./Paper Composer.app
-./dist/Paper Composer.app
-```
+Windows 10/11 通常已內建 Microsoft Edge WebView2 Runtime，不需額外安裝。若 build 後啟動 app 時出現 WebView2 相關錯誤，請至 [Microsoft 官方頁面](https://developer.microsoft.com/microsoft-edge/webview2/) 下載安裝。
 
-### Windows app
+#### 3. 建置與封裝
 
-Run in PowerShell:
+在 PowerShell 執行：
 
 ```powershell
 .\scripts\package_windows.ps1
 ```
 
-Output:
+輸出：
 
 ```text
 .\dist\windows\Paper Composer\Paper Composer.exe
 .\dist\windows\PaperComposer-windows.zip
 ```
 
-Install for the current Windows user:
+為目前 Windows 使用者安裝捷徑：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File ".\dist\windows\Paper Composer\install.ps1"
 ```
 
-The Windows app uses WebView2 for the native window, starts `drive_bridge.exe` automatically, and stops the bridge when the app window closes.
+Windows app 使用 WebView2 作為原生視窗，啟動時自動開啟 `drive_bridge.exe`，關閉視窗時自動停止 bridge。
+
+---
+
+### macOS
+
+#### 1. 安裝 Rust
+
+在 Terminal 執行：
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+依照提示完成後，重新開啟 Terminal 或執行：
+
+```bash
+source "$HOME/.cargo/env"
+```
+
+確認版本：
+
+```bash
+rustc --version
+```
+
+需要 `1.86.0` 以上，本專案以 `1.95.0` 測試。
+
+日後更新 Rust：
+
+```bash
+rustup update stable
+rustup default stable
+```
+
+#### 2. Xcode Command Line Tools
+
+app shell 以 `swiftc` 編譯，需要 Xcode Command Line Tools：
+
+```bash
+xcode-select --install
+```
+
+#### 3. 建置
+
+```bash
+./scripts/build_macos_app.sh
+```
+
+輸出：
+
+```text
+./Paper Composer.app
+./dist/Paper Composer.app
+```
 
 ## Google Drive API 設定
 
