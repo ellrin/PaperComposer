@@ -253,6 +253,7 @@ mod tests {
                 ph("P2", "Result", "evidence", "These results indicate that {claim}."),
                 ph("T1", "Any", "transition", "In contrast, {x}."),
             ],
+            expressions: vec![],
             vocabulary: vec![VocabEntry { avoid: "utilize".into(), prefer: "use".into(), note: String::new() }],
             rules: vec![],
         }

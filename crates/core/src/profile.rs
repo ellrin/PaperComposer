@@ -68,6 +68,24 @@ pub struct VocabEntry {
     pub note: String,
 }
 
+/// A reusable piece smaller than a sentence: an opening connective, a
+/// collocation, a phrase.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Expression {
+    pub id: String,
+    /// `connective`, `collocation` or `phrase`.
+    pub kind: String,
+    pub text: String,
+    #[serde(default)]
+    pub usage: String,
+    #[serde(default)]
+    pub section: String,
+    #[serde(default)]
+    pub example: String,
+    #[serde(default, deserialize_with = "split_tags")]
+    pub tags: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleKind {
@@ -115,6 +133,8 @@ pub struct Profile {
     pub root: PathBuf,
     pub manifest: Manifest,
     pub phrases: Vec<Phrase>,
+    #[serde(default)]
+    pub expressions: Vec<Expression>,
     pub vocabulary: Vec<VocabEntry>,
     pub rules: Vec<Rule>,
 }
@@ -162,8 +182,25 @@ impl Profile {
             .map(|(_, r)| r)
             .collect();
 
+        // Optional file: absent in older profiles, so no warning when missing.
+        let expressions = if root.join("expressions.csv").exists() {
+            read_csv::<Expression>(root, "expressions.csv", &mut issues)
+                .into_iter()
+                .filter(|(line, x)| {
+                    let ok = !x.id.trim().is_empty() && !x.text.trim().is_empty();
+                    if !ok {
+                        issues.push(issue("expressions.csv", *line, None, "id and text are required", true));
+                    }
+                    ok
+                })
+                .map(|(_, x)| x)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         Ok((
-            Profile { root: root.to_path_buf(), manifest, phrases, vocabulary, rules },
+            Profile { root: root.to_path_buf(), manifest, phrases, expressions, vocabulary, rules },
             issues,
         ))
     }

@@ -7,10 +7,13 @@
 
 pub mod check;
 pub mod compose;
+pub mod decompose;
+pub mod paper;
+pub mod table;
 pub mod profile;
 pub mod retrieve;
 pub mod text;
 
 pub use check::{check_text, ParagraphReport, Severity, Finding};
-pub use profile::{Issue, Manifest, Phrase, Profile, Rule, RuleKind, VocabEntry, SCHEMA_VERSION};
+pub use profile::{Expression, Issue, Manifest, Phrase, Profile, Rule, RuleKind, VocabEntry, SCHEMA_VERSION};
 pub use retrieve::{search, Hit, Query};

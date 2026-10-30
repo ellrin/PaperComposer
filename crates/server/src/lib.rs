@@ -11,18 +11,22 @@
 //! The config file lives in the OS config folder, never inside a repository,
 //! so a personal profile path is never committed by accident.
 
+pub mod claude;
 pub mod engine;
 
 use axum::{
-    extract::{Query as AxQuery, State},
+    extract::{Path as AxPath, Query as AxQuery, State},
     http::StatusCode,
     response::{IntoResponse, Json},
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
+use claude::Claude;
 use engine::{Engine, EngineConfig};
 use pc_core::compose::{self, ComposeRequest, Draft, DraftCheck, Prompt};
-use pc_core::{check_text, search, Hit, Issue, Profile, Query};
+use pc_core::paper::{self, Section};
+use pc_core::table::{self, Table};
+use pc_core::{check_text, decompose, search, Hit, Issue, Profile, Query};
 use serde::{Deserialize, Serialize};
 use std::{
     net::SocketAddr,
@@ -62,6 +66,7 @@ struct Loaded {
 struct AppState {
     loaded: RwLock<Loaded>,
     engine: Engine,
+    claude: RwLock<Claude>,
     paths: Paths,
 }
 
@@ -74,14 +79,68 @@ struct Config {
     /// Profile folder on its own (when not using a workspace).
     profile_path: Option<PathBuf>,
     engine: Option<EngineConfig>,
+    claude: Option<ClaudeConfig>,
+}
+
+#[derive(Deserialize, Default)]
+struct ClaudeConfig {
+    model: Option<String>,
+}
+
+fn config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("PaperComposer/config.toml"))
 }
 
 fn read_config() -> Config {
-    dirs::config_dir()
-        .map(|d| d.join("PaperComposer/config.toml"))
+    config_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|raw| toml::from_str(&raw).ok())
         .unwrap_or_default()
+}
+
+/// Set one `[table] key = value` in config.toml, keeping everything else.
+fn write_config_value(table: &str, key: &str, value: &str) -> Result<(), String> {
+    let path = config_path().ok_or("no config folder on this system")?;
+    let mut doc: toml::Table = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or_default();
+    let section = doc
+        .entry(table.to_string())
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    if let toml::Value::Table(t) = section {
+        t.insert(key.to_string(), toml::Value::String(value.to_string()));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, toml::to_string(&doc).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// The demo workspace is copied into the app's data folder on first use, so
+/// trying the app never edits the bundled (or repository) copy.
+fn demo_workspace(paths: &Paths) -> PathBuf {
+    let Some(target) = dirs::data_dir().map(|d| d.join("PaperComposer/demo-workspace")) else {
+        return paths.demo_workspace.clone();
+    };
+    if !target.exists() && copy_dir(&paths.demo_workspace, &target).is_err() {
+        return paths.demo_workspace.clone();
+    }
+    target
 }
 
 /// Resolution order: PAPERCOMPOSER_WORKSPACE, PAPERCOMPOSER_PROFILE,
@@ -101,7 +160,8 @@ fn locate(paths: &Paths) -> (PathBuf, Option<PathBuf>, bool) {
     if let Some(p) = cfg.profile_path {
         return (p, None, false);
     }
-    (paths.demo_workspace.join("profile"), Some(paths.demo_workspace.clone()), true)
+    let ws = demo_workspace(paths);
+    (ws.join("profile"), Some(ws), true)
 }
 
 fn load(paths: &Paths) -> Loaded {
@@ -297,10 +357,164 @@ async fn compose_paragraph(State(s): State<Shared>, Json(req): Json<ComposeReque
     Json(ComposeReply { references: refs, draft: None, check: None, error: last_err, prompt }).into_response()
 }
 
+// ── Papers ─────────────────────────────────────────────
+
+fn bad(msg: &str) -> axum::response::Response {
+    (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
+}
+
+async fn paper_dir(s: &Shared, name: &str) -> Result<PathBuf, axum::response::Response> {
+    if !paper::safe_name(name) {
+        return Err(bad("invalid paper name"));
+    }
+    let l = s.loaded.read().await;
+    let ws = l.workspace.clone().ok_or_else(|| bad("no workspace"))?;
+    let dir = ws.join("papers").join(name);
+    if !dir.is_dir() {
+        return Err((StatusCode::NOT_FOUND, "paper not found").into_response());
+    }
+    Ok(dir)
+}
+
+async fn get_paper(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
+    match paper_dir(&s, &name).await {
+        Ok(dir) => Json(paper::load_paper(&dir)).into_response(),
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize)]
+struct SectionBody {
+    title: String,
+    paragraphs: Vec<String>,
+}
+
+async fn put_section(
+    State(s): State<Shared>,
+    AxPath((name, file)): AxPath<(String, String)>,
+    Json(b): Json<SectionBody>,
+) -> impl IntoResponse {
+    if !paper::safe_name(&file) || !file.ends_with(".tex") {
+        return bad("invalid section file");
+    }
+    let dir = match paper_dir(&s, &name).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    let section = Section { file: file.clone(), title: b.title, paragraphs: b.paragraphs };
+    let path = dir.join("sections").join(&file);
+    if let Err(e) = std::fs::create_dir_all(dir.join("sections")).and_then(|_| paper::write_atomic(&path, &paper::render_section(&section))) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    // Return what is now on disk, re-read, so the UI shows the saved form.
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    Json(paper::parse_section(&file, &text)).into_response()
+}
+
+// ── Database tables ────────────────────────────────────
+
+async fn get_table(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
+    let dir = s.loaded.read().await.path.clone();
+    match table::read_table(&dir, &name) {
+        Ok(t) => Json(t).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+async fn put_table(State(s): State<Shared>, AxPath(name): AxPath<String>, Json(t): Json<Table>) -> impl IntoResponse {
+    let dir = s.loaded.read().await.path.clone();
+    if let Err(e) = table::write_table(&dir, &name, &t) {
+        return bad(&e);
+    }
+    let fresh = load(&s.paths);
+    let issues: Vec<Issue> = fresh.issues.iter().filter(|i| i.file == name).cloned().collect();
+    *s.loaded.write().await = fresh;
+    Json(issues).into_response()
+}
+
+// ── Claude ─────────────────────────────────────────────
+
+async fn claude_status(State(s): State<Shared>) -> impl IntoResponse {
+    Json(s.claude.read().await.status())
+}
+
+#[derive(Deserialize)]
+struct ClaudeSettings {
+    /// Some("") removes the stored key; None leaves it.
+    key: Option<String>,
+    model: Option<String>,
+}
+
+async fn claude_settings(State(s): State<Shared>, Json(b): Json<ClaudeSettings>) -> impl IntoResponse {
+    if let Some(k) = &b.key {
+        if let Err(e) = claude::save_key(k) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("無法存入系統金鑰圈：{e}")).into_response();
+        }
+    }
+    if let Some(m) = b.model.filter(|m| claude::MODELS.contains(&m.as_str())) {
+        if let Err(e) = write_config_value("claude", "model", &m) {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+        }
+        s.claude.write().await.model = m;
+    }
+    Json(s.claude.read().await.status()).into_response()
+}
+
+#[derive(Deserialize)]
+struct DecomposeBody {
+    text: String,
+    section: Option<String>,
+}
+
+async fn decompose_text(State(s): State<Shared>, Json(b): Json<DecomposeBody>) -> impl IntoResponse {
+    if b.text.trim().is_empty() {
+        return bad("no text");
+    }
+    let prompt = {
+        let l = s.loaded.read().await;
+        let Some(p) = &l.profile else { return bad("profile not loaded") };
+        decompose::build_prompt(p, &b.text, b.section.as_deref())
+    };
+    // Claude when configured, otherwise the local engine.
+    let reply = {
+        let c = s.claude.read().await;
+        if c.status().configured {
+            c.complete(&prompt).await
+        } else if s.engine.configured() {
+            s.engine.complete(&prompt, None).await
+        } else {
+            Err("需要先在設定中連接 Claude 或本機模型".into())
+        }
+    };
+    let reply = match reply {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    let l = s.loaded.read().await;
+    let Some(p) = &l.profile else { return bad("profile not loaded") };
+    match decompose::parse_proposals(p, &reply) {
+        Ok(props) => Json(props).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("回覆無法拆解：{e}")).into_response(),
+    }
+}
+
 pub fn router(paths: Paths) -> Router {
-    let engine = Engine::new(EngineConfig::resolve(read_config().engine));
-    let state: Shared = Arc::new(AppState { loaded: RwLock::new(load(&paths)), engine, paths: paths.clone() });
+    let cfg = read_config();
+    let engine = Engine::new(EngineConfig::resolve(cfg.engine));
+    let claude = Claude::new(cfg.claude.and_then(|c| c.model));
+    let state: Shared = Arc::new(AppState {
+        loaded: RwLock::new(load(&paths)),
+        engine,
+        claude: RwLock::new(claude),
+        paths: paths.clone(),
+    });
     Router::new()
+        .route("/api/papers/{name}", get(get_paper))
+        .route("/api/papers/{name}/sections/{file}", put(put_section))
+        .route("/api/tables/{name}", get(get_table).put(put_table))
+        .route("/api/claude", get(claude_status))
+        .route("/api/settings/claude", post(claude_settings))
+        .route("/api/decompose", post(decompose_text))
         .route("/api/workspace", get(workspace_info))
         .route("/api/profile", get(profile_info))
         .route("/api/profile/rules", get(rule_messages))

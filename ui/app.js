@@ -1,44 +1,45 @@
-// PaperComposer UI shell (dev mode, served by pc-server).
-// The document here is a demo held in memory; file-backed documents come next.
+// PaperComposer UI.
+// Top bar: global actions (file, template, database, settings).
+// Left: navigator of sections and paragraphs. Centre: the whole paper.
+// Right: one-shot writing box and checks for the current paragraph.
 
-const SECTIONS = ["Introduction", "Method", "Result", "Discussion", "Conclusion"];
-
-const DEMO = {
-  Introduction: [
-    "Retrieval-augmented generation has become central to question answering over the past decade.\nModels now consult external documents before they answer.\nThis reduces hallucination but adds a retrieval step that can fail silently.",
-    "Despite recent advances in retrieval, long-context grounding remains largely unexplored.\nExisting approaches either truncate the context or utilize expensive re-ranking at every step, which limits their use on long scientific documents that routinely exceed the context window of current models by a large margin.",
-    "In this paper, we propose a two-stage retriever, which separates recall from precision.\nOur contributions are threefold.",
-  ],
-  Method: [
-    "Let $x_t$ denote the input at step $t$, where $t \\le T$.\nWe adopt a dense encoder because it handles paraphrase well.\nThe second stage scores each candidate against the query.",
-  ],
-  Result: [
-    "Compared with BM25, our retriever improves recall@10 by 12.4\\%.\nThis gain is most pronounced on long inputs, where the baseline truncates context.\nThese results indicate that context handling drives the improvement.",
-  ],
-  Discussion: [],
-  Conclusion: [],
-};
+const ROLES = ["Abstract", "Introduction", "Related work", "Method", "Result", "Discussion", "Conclusion", "Any"];
+const TABLES = [
+  ["phrases.csv", "句型"],
+  ["expressions.csv", "片語"],
+  ["vocabulary.csv", "用詞"],
+  ["rules.csv", "規則"],
+  ["exemplars.csv", "範例"],
+  ["equations.csv", "公式"],
+];
 
 const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+const pad = (n) => String(n).padStart(2, "0");
 const store = {
   get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
 const state = {
-  doc: store.get("pc.doc", DEMO),
-  section: store.get("pc.section", "Introduction"),
-  current: 0,
-  reports: [],
+  workspace: null,
+  paper: null,        // { name, sections: [{file, title, paragraphs}] }
+  reports: [],        // per section: array of paragraph reports
+  cur: { s: 0, p: 0 },
   profile: null,
+  ruleText: {},
+  engine: null,
+  claude: null,
+  composed: null,
+  db: { name: "phrases.csv", tables: {}, dirty: new Set(), issues: {} },
 };
 
-// ── API ────────────────────────────────────────────────
-async function api(path, body) {
-  const r = await fetch(path, body
-    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-    : undefined);
-  if (!r.ok) throw new Error(`${path}: ${r.status}`);
+async function api(path, body, method) {
+  const opts = body !== undefined
+    ? { method: method ?? "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    : undefined;
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
   return r.status === 204 ? null : r.json();
 }
 
@@ -47,93 +48,156 @@ function applyTheme() {
   const t = store.get("pc.theme", "orange");
   const sys = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
   const m = store.get("pc.mode", sys);
-  document.documentElement.dataset.theme = t;
-  document.documentElement.dataset.mode = m;
-  document.documentElement.classList.toggle("dim-paper", store.get("pc.dim", false));
-  document.querySelectorAll(".theme[data-theme]").forEach((b) =>
-    b.setAttribute("aria-pressed", String(b.dataset.theme === t)));
+  const root = document.documentElement;
+  root.dataset.theme = t;
+  root.dataset.mode = m;
+  root.classList.toggle("dim-paper", store.get("pc.dim", false));
+  document.querySelectorAll(".theme[data-theme]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.theme === t)));
   $("#dimPaper").setAttribute("aria-pressed", String(store.get("pc.dim", false)));
   $("#mode").textContent = m === "dark" ? "☾" : "☀";
 }
 
-// ── Rendering ──────────────────────────────────────────
-const paras = () => state.doc[state.section] ?? [];
-const worst = (r) => r?.status ?? (r ? "ok" : "");
+// ── Paper ──────────────────────────────────────────────
+const sections = () => state.paper?.sections ?? [];
+const curSection = () => sections()[state.cur.s];
+const roleOf = (title) => ROLES.find((r) => r.toLowerCase() === title.toLowerCase())
+  ?? ROLES.find((r) => title.toLowerCase().startsWith(r.toLowerCase().slice(0, 5))) ?? "Any";
+const rank = (s) => ({ info: 1, warning: 2, error: 3 }[s] ?? 0);
 
-function renderSections() {
-  const nav = $("#sections");
-  nav.innerHTML = "";
-  SECTIONS.forEach((name, i) => {
-    const b = document.createElement("button");
-    b.innerHTML = `<span class="n">${String(i + 1).padStart(2, "0")}</span>${name}`;
-    b.setAttribute("aria-current", String(name === state.section));
-    const ps = state.doc[name] ?? [];
-    if (ps.length && name !== state.section && state.sectionClean?.[name]) b.classList.add("done");
-    b.onclick = () => { state.section = name; state.current = 0; store.set("pc.section", name); refresh(); };
-    nav.append(b);
-  });
-  const i = SECTIONS.indexOf(state.section);
-  $("#sectionStep").textContent = `STEP ${String(i + 1).padStart(2, "0")}`;
-  $("#sectionName").textContent = state.section;
+async function openPaper(name) {
+  try {
+    const secs = await api(`/api/papers/${encodeURIComponent(name)}`);
+    state.paper = { name, sections: secs };
+    state.cur = { s: 0, p: 0 };
+    store.set("pc.paper", name);
+  } catch (e) {
+    state.paper = null;
+  }
+  $("#paperName").textContent = state.paper?.name ?? "—";
+  await checkAll();
+  render();
 }
+
+async function checkSection(i) {
+  const s = sections()[i];
+  if (!s) return;
+  const text = s.paragraphs.join("\n\n");
+  try { state.reports[i] = text.trim() ? await api("/api/check", { text, section: roleOf(s.title) }) : []; }
+  catch { state.reports[i] = []; }
+}
+async function checkAll() {
+  state.reports = [];
+  await Promise.all(sections().map((_, i) => checkSection(i)));
+}
+
+async function saveSection(i) {
+  const s = sections()[i];
+  const saved = await api(`/api/papers/${encodeURIComponent(state.paper.name)}/sections/${encodeURIComponent(s.file)}`,
+    { title: s.title, paragraphs: s.paragraphs }, "PUT");
+  sections()[i] = saved;
+  await checkSection(i);
+}
+
+function render() { renderNav(); renderPaper(); renderSide(); renderStatus(); }
+
+function renderNav() {
+  $("#navTitle").textContent = state.paper?.name ?? "";
+  const nav = $("#nav");
+  nav.innerHTML = "";
+  if (!state.paper) { nav.append(el("li", "empty", "從「檔案」開啟論文")); return; }
+  const open = store.get("pc.navOpen", {});
+  sections().forEach((sec, si) => {
+    const li = el("li", "sec");
+    li.dataset.open = String(open[sec.file] !== false);
+    const head = el("button");
+    head.append(el("span", "caret", "▾"), el("span", "", sec.title), el("span", "count", String(sec.paragraphs.length)));
+    head.onclick = () => {
+      const now = li.dataset.open !== "true";
+      li.dataset.open = String(now);
+      open[sec.file] = now;
+      store.set("pc.navOpen", open);
+      document.getElementById(`sec-${si}`)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    };
+    const ol = el("ol", "outline");
+    sec.paragraphs.forEach((text, pi) => {
+      const b = el("button");
+      b.setAttribute("aria-current", String(si === state.cur.s && pi === state.cur.p));
+      const rep = state.reports[si]?.[pi];
+      b.append(el("span", `status ${rep ? rep.status ?? "" : ""}`), el("span", "i", pad(pi + 1)), el("span", "t", text.split("\n")[0]));
+      b.onclick = () => { select(si, pi); paraEl(si, pi)?.scrollIntoView({ block: "center", behavior: "smooth" }); };
+      const item = el("li");
+      item.append(b);
+      ol.append(item);
+    });
+    li.append(head, ol);
+    nav.append(li);
+  });
+}
+
+const paraEl = (si, pi) => document.querySelector(`.para[data-s="${si}"][data-p="${pi}"]`);
 
 function renderPaper() {
   const paper = $("#paper");
-  paper.innerHTML = `<h1>${state.section}</h1>`;
-  paras().forEach((text, i) => {
-    const p = document.createElement("p");
-    p.className = "para" + (i === state.current ? " current" : "");
-    const rep = state.reports[i];
-    const flagged = new Map();
-    rep?.findings.forEach((f) => {
-      if (f.sentence == null) return;
-      const prev = flagged.get(f.sentence);
-      if (!prev || rank(f.severity) > rank(prev)) flagged.set(f.sentence, f.severity);
+  paper.innerHTML = "";
+  if (!state.paper) return;
+  sections().forEach((sec, si) => {
+    const h = el("h2", "", sec.title);
+    h.id = `sec-${si}`;
+    paper.append(h);
+    sec.paragraphs.forEach((text, pi) => {
+      const p = el("p", "para");
+      p.dataset.s = si;
+      p.dataset.p = pi;
+      const rep = state.reports[si]?.[pi];
+      const flagged = new Map();
+      rep?.findings.forEach((f) => {
+        if (f.sentence == null) return;
+        if (rank(f.severity) > rank(flagged.get(f.sentence))) flagged.set(f.sentence, f.severity);
+      });
+      (rep?.sentence_text ?? [text.replace(/\s+/g, " ")]).forEach((s, i) => {
+        p.append(el("span", "s" + (flagged.has(i) ? ` flag ${flagged.get(i)}` : ""), s + " "));
+      });
+      p.onclick = () => select(si, pi);
+      p.ondblclick = () => edit(p, si, pi);
+      paper.append(p);
     });
-    const sents = rep?.sentence_text ?? [text.replace(/\s+/g, " ")];
-    sents.forEach((s, si) => {
-      const span = document.createElement("span");
-      span.className = "s" + (flagged.has(si) ? ` flag ${flagged.get(si)}` : "");
-      span.textContent = s + " ";
-      p.append(span);
-    });
-    p.onclick = () => { state.current = i; renderSide(); markCurrent(); };
-    p.ondblclick = () => edit(p, i);
-    paper.append(p);
+    if (!sec.paragraphs.length) {
+      const p = el("p", "para add-para", "雙擊新增段落");
+      p.ondblclick = () => { sec.paragraphs.push(""); render(); edit(paraEl(si, 0), si, 0); };
+      paper.append(p);
+    }
   });
-  if (!paras().length) {
-    const e = document.createElement("p");
-    e.className = "para";
-    e.style.color = "#8d8d94";
-    e.textContent = "雙擊開始寫第一段";
-    e.ondblclick = () => { state.doc[state.section] = [""]; edit(e, 0); };
-    paper.append(e);
-  }
+  markCurrent();
 }
 
-const rank = (s) => ({ info: 1, warning: 2, error: 3 }[s] ?? 0);
+function select(si, pi) {
+  state.cur = { s: si, p: pi };
+  markCurrent();
+  renderSide();
+}
 
 function markCurrent() {
-  document.querySelectorAll(".para").forEach((p, i) => p.classList.toggle("current", i === state.current));
-  document.querySelectorAll(".outline button").forEach((b, i) => b.setAttribute("aria-current", String(i === state.current)));
+  document.querySelectorAll(".para").forEach((p) =>
+    p.classList.toggle("current", +p.dataset.s === state.cur.s && +p.dataset.p === state.cur.p));
+  document.querySelectorAll(".nav .outline button").forEach((b) => b.setAttribute("aria-current", "false"));
+  const navSec = document.querySelectorAll(".nav .sec")[state.cur.s];
+  navSec?.querySelectorAll(".outline button")[state.cur.p]?.setAttribute("aria-current", "true");
 }
 
-function edit(p, i) {
-  state.current = i;
+function edit(p, si, pi) {
+  if (!p) return;
+  select(si, pi);
   const ta = document.createElement("textarea");
-  ta.value = paras()[i] ?? "";
+  ta.value = sections()[si].paragraphs[pi] ?? "";
   const fit = () => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; };
   ta.oninput = fit;
-  ta.onkeydown = (e) => {
-    if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) ta.blur();
-  };
+  ta.onkeydown = (e) => { if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) ta.blur(); };
   ta.onblur = async () => {
     const v = ta.value.trim();
-    const list = paras().slice();
-    if (v) list[i] = v; else list.splice(i, 1);
-    state.doc[state.section] = list;
-    store.set("pc.doc", state.doc);
-    await refresh();
+    const list = sections()[si].paragraphs;
+    if (v) list[pi] = v; else list.splice(pi, 1);
+    try { await saveSection(si); } catch (e) { flash(`儲存失敗：${e.message}`); }
+    render();
   };
   p.replaceChildren(ta);
   p.ondblclick = null;
@@ -141,58 +205,47 @@ function edit(p, i) {
   ta.focus();
 }
 
-function renderOutline() {
-  const ol = $("#outline");
-  ol.innerHTML = "";
-  paras().forEach((text, i) => {
-    const li = document.createElement("li");
-    const b = document.createElement("button");
-    b.setAttribute("aria-current", String(i === state.current));
-    b.innerHTML = `<span class="status ${worst(state.reports[i])}"></span><span class="i">${String(i + 1).padStart(2, "0")}</span><span class="t"></span>`;
-    b.querySelector(".t").textContent = text.split("\n")[0];
-    b.onclick = () => {
-      state.current = i;
-      markCurrent();
-      renderSide();
-      document.querySelectorAll(".para")[i]?.scrollIntoView({ block: "center", behavior: "smooth" });
-    };
-    li.append(b);
-    ol.append(li);
-  });
-}
+// ── Right panel ────────────────────────────────────────
+function renderSide() { renderFindings(); syncCompose(); }
 
 function renderFindings() {
   const ul = $("#findings");
   ul.innerHTML = "";
-  const r = state.reports[state.current];
-  if (!r) { ul.innerHTML = `<li class="empty">—</li>`; return; }
-  if (!r.findings.length && !r.pending.length) { ul.innerHTML = `<li><span class="status"></span><span>通過</span></li>`; return; }
+  const r = state.reports[state.cur.s]?.[state.cur.p];
+  if (!r) { ul.append(el("li", "empty", "—")); return; }
+  if (!r.findings.length && !r.pending.length) {
+    const li = el("li"); li.append(el("span", "status"), el("span", "", "通過")); ul.append(li); return;
+  }
   r.findings.forEach((f) => {
-    const li = document.createElement("li");
-    li.innerHTML = `<span class="status ${f.severity}"></span><span><span class="m"></span><span class="rid">${f.rule}${f.sentence != null ? ` · s${f.sentence + 1}` : ""}</span></span>`;
-    li.querySelector(".m").textContent = f.message;
+    const li = el("li");
+    const body = el("span");
+    body.append(el("span", "m", f.message), el("span", "rid", f.rule + (f.sentence != null ? ` · s${f.sentence + 1}` : "")));
+    li.append(el("span", `status ${f.severity}`), body);
     ul.append(li);
   });
-  const rules = state.profile?.rules_by_id ?? {};
   r.pending.forEach((id) => {
-    const li = document.createElement("li");
-    li.className = "pending";
-    li.innerHTML = `<span class="status info"></span><span><span class="m"></span><span class="rid">${id}</span></span>`;
-    li.querySelector(".m").textContent = rules[id] ?? id;
+    const li = el("li", "pending");
+    const body = el("span");
+    body.append(el("span", "m", state.ruleText[id] ?? id), el("span", "rid", id));
+    li.append(el("span", "status info"), body);
     ul.append(li);
   });
 }
 
-// ── Compose (one-shot Q&A) ─────────────────────────────
+function syncCompose() {
+  const sel = $("#cSection");
+  if (!sel.options.length) ROLES.forEach((r) => sel.append(new Option(r, r)));
+  const sec = curSection();
+  if (sec) sel.value = roleOf(sec.title);
+}
+
 const seg = (id) => $(`#${id} [aria-pressed="true"]`)?.dataset.v;
 
 function slotted(template) {
-  // Template text with {slots} highlighted; built as nodes, never as HTML.
   const frag = document.createDocumentFragment();
   template.split(/(\{[^}]*\})/).forEach((part) => {
     if (!part) return;
-    if (part.startsWith("{")) { const i = document.createElement("i"); i.textContent = part; frag.append(i); }
-    else frag.append(part);
+    if (part.startsWith("{")) frag.append(el("i", "", part)); else frag.append(part);
   });
   return frag;
 }
@@ -200,7 +253,7 @@ function slotted(template) {
 async function compose() {
   const points = $("#points").value.trim();
   if (!points) { $("#points").focus(); return; }
-  const list = paras();
+  const list = curSection()?.paragraphs ?? [];
   const ctx = seg("cContext") === "on";
   const body = {
     points,
@@ -209,20 +262,15 @@ async function compose() {
     min_words: Number($("#cMin").value) || 120,
     max_words: Number($("#cMax").value) || 180,
     language: seg("cLang"),
-    before: ctx ? list[state.current] ?? null : null,
-    after: ctx ? list[state.current + 1] ?? null : null,
+    before: ctx ? list[state.cur.p] ?? null : null,
+    after: ctx ? list[state.cur.p + 1] ?? null : null,
   };
   const btn = $("#generate");
   btn.disabled = true;
-  btn.firstChild.textContent = "生成中";
-  try {
-    state.composed = await api("/api/compose", body);
-  } catch (e) {
-    state.composed = { error: String(e.message ?? e), references: [] };
-  } finally {
-    btn.disabled = false;
-    btn.firstChild.textContent = "生成";
-  }
+  btn.firstElementChild.textContent = "生成中";
+  try { state.composed = await api("/api/compose", body); }
+  catch (e) { state.composed = { error: e.message, references: [] }; }
+  finally { btn.disabled = false; btn.firstElementChild.textContent = "生成"; }
   renderResult();
 }
 
@@ -231,166 +279,341 @@ function renderResult() {
   box.innerHTML = "";
   const r = state.composed;
   if (!r) return;
-  const wrap = document.createElement("div");
-  wrap.className = "result";
-
+  const wrap = el("div", "result");
   if (r.draft) {
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.innerHTML = `<span><b>${r.check.covered}/${r.check.total}</b> 句用句型庫</span><span>${r.check.words} 字</span>`;
+    const meta = el("div", "meta");
+    const cov = el("span"); cov.append(el("b", "", `${r.check.covered}/${r.check.total}`), " 句用句型庫");
+    meta.append(cov, el("span", "", `${r.check.words} 字`));
     wrap.append(meta);
-
-    const d = document.createElement("div");
-    d.className = "draft";
+    const d = el("div", "draft");
     r.draft.sentences.forEach((s) => {
-      const span = document.createElement("span");
-      span.className = "sent";
-      span.textContent = s.text;
-      const sup = document.createElement("sup");
-      sup.textContent = s.phrase_id ?? "自由";
-      if (!s.phrase_id) sup.className = "free";
+      const span = el("span", "sent", s.text);
       const ref = r.references.find((h) => h.phrase.id === s.phrase_id);
       if (ref) span.title = ref.phrase.template;
-      d.append(span, sup, " ");
+      d.append(span, el("sup", s.phrase_id ? "" : "free", s.phrase_id ?? "自由"), " ");
     });
     wrap.append(d);
-
     if (r.check.problems.length) {
-      const ul = document.createElement("ul");
-      ul.className = "problems";
-      r.check.problems.forEach((p) => { const li = document.createElement("li"); li.textContent = p; ul.append(li); });
+      const ul = el("ul", "problems");
+      r.check.problems.forEach((p) => ul.append(el("li", "", p)));
       wrap.append(ul);
     }
-
     const text = r.draft.sentences.map((s) => s.text).join("\n");
-    const acts = document.createElement("div");
-    acts.className = "actions";
-    const act = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.onclick = fn; acts.append(b); };
-    act("插入", () => placeDraft(text, "insert"));
-    act("取代", () => placeDraft(text, "replace"));
-    act("重來", compose);
-    act("複製", () => navigator.clipboard?.writeText(text.replace(/\n/g, " ")));
+    const acts = el("div", "actions");
+    [["插入", () => placeDraft(text, "insert")], ["取代", () => placeDraft(text, "replace")], ["重來", compose],
+     ["複製", () => navigator.clipboard?.writeText(text.replace(/\n/g, " "))]]
+      .forEach(([label, fn]) => { const b = el("button", "", label); b.onclick = fn; acts.append(b); });
     wrap.append(acts);
   } else {
-    const note = document.createElement("p");
-    note.className = "note";
-    note.textContent = r.error === "no engine" ? "未連接模型：以下是會交給模型的參考句型。" : `生成失敗：${r.error}`;
-    wrap.append(note);
+    wrap.append(el("p", "note", r.error === "no engine" ? "未連接模型：以下是會交給模型的參考句型。" : `生成失敗：${r.error}`));
     if (r.prompt) {
-      const acts = document.createElement("div");
-      acts.className = "actions";
-      const b = document.createElement("button");
-      b.textContent = "複製提示詞";
-      b.title = "貼到任何對話模型使用";
+      const acts = el("div", "actions");
+      const b = el("button", "", "複製提示詞");
       b.onclick = () => navigator.clipboard?.writeText(`${r.prompt.system}\n\n${r.prompt.user}`);
       acts.append(b);
       wrap.append(acts);
     }
   }
-
   if (r.references?.length) {
-    const ul = document.createElement("ul");
-    ul.className = "refs";
+    const ul = el("ul", "refs");
     r.references.forEach(({ phrase }) => {
-      const li = document.createElement("li");
-      const id = document.createElement("span");
-      id.textContent = phrase.id;
-      const t = document.createElement("span");
-      t.append(slotted(phrase.template));
-      li.append(id, t);
-      ul.append(li);
+      const li = el("li"); const t = el("span"); t.append(slotted(phrase.template));
+      li.append(el("span", "", phrase.id), t); ul.append(li);
     });
-    if (r.draft) {
-      const det = document.createElement("details");
-      const sum = document.createElement("summary");
-      sum.className = "note";
-      sum.textContent = `參考句型 ${r.references.length}`;
-      det.append(sum, ul);
-      wrap.append(det);
-    } else {
-      wrap.append(ul);
-    }
+    if (r.draft) { const det = el("details"); det.append(el("summary", "note", `參考句型 ${r.references.length}`), ul); wrap.append(det); }
+    else wrap.append(ul);
   }
   box.append(wrap);
 }
 
 async function placeDraft(text, how) {
-  const list = paras().slice();
-  if (how === "replace" && list.length) list[state.current] = text;
-  else { list.splice(list.length ? state.current + 1 : 0, 0, text); state.current = list.length ? state.current + (list.length > 1 ? 1 : 0) : 0; }
-  state.doc[state.section] = list;
-  store.set("pc.doc", state.doc);
-  await refresh();
-}
-
-function syncCompose() {
-  const sel = $("#cSection");
-  if (!sel.options.length) SECTIONS.forEach((s) => sel.append(new Option(s, s)));
-  sel.value = state.section;
+  const sec = curSection();
+  if (!sec) return;
+  if (how === "replace" && sec.paragraphs.length) sec.paragraphs[state.cur.p] = text;
+  else {
+    const at = sec.paragraphs.length ? state.cur.p + 1 : 0;
+    sec.paragraphs.splice(at, 0, text);
+    state.cur.p = at;
+  }
+  try { await saveSection(state.cur.s); } catch (e) { flash(`儲存失敗：${e.message}`); }
+  render();
 }
 
 function renderStatus() {
-  const words = state.reports.reduce((n, r) => n + r.words, 0);
-  const p = state.profile;
-  const e = state.engine;
-  const dot = e?.connected ? "var(--ok)" : "var(--faint)";
-  $("#statusbar").innerHTML =
-    `<span class="accent">${String(SECTIONS.indexOf(state.section) + 1).padStart(2, "0")} / ${state.section}</span>` +
-    `<span>${paras().length} 段 · ${words} 字</span>` +
-    `<span><span class="dot" style="background:${dot}"></span><span id="engineName"></span></span>` +
-    (p ? `<span>${p.phrases} 句型 · ${p.rules} 規則</span>` : "");
-  $("#engineName").textContent = e?.name ?? "未連接模型";
+  const words = state.reports.flat().reduce((n, r) => n + (r?.words ?? 0), 0);
+  const paras = sections().reduce((n, s) => n + s.paragraphs.length, 0);
+  const sec = curSection();
+  const bar = $("#statusbar");
+  bar.innerHTML = "";
+  bar.append(el("span", "accent", sec ? `${pad(state.cur.s + 1)} / ${sec.title}` : "—"), el("span", "", `${paras} 段 · ${words} 字`));
+  const eng = el("span"); const dot = el("span", "dot");
+  dot.style.background = state.engine?.connected ? "var(--ok)" : "var(--faint)";
+  eng.append(dot, state.engine?.name ?? "未連接模型"); bar.append(eng);
+  const cl = el("span"); const cdot = el("span", "dot");
+  cdot.style.background = state.claude?.configured ? "var(--ok)" : "var(--faint)";
+  cl.append(cdot, "Claude"); bar.append(cl);
 }
 
-function renderSide() { renderFindings(); syncCompose(); }
+let flashTimer;
+function flash(msg) {
+  let t = $("#flash");
+  if (!t) { t = el("div", "tip"); t.id = "flash"; t.style.bottom = "24px"; t.style.left = "50%"; t.style.transform = "translateX(-50%)"; document.body.append(t); }
+  t.textContent = msg;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => t.remove(), 3000);
+}
 
-async function refresh() {
-  const text = paras().join("\n\n");
-  try { state.reports = text.trim() ? await api("/api/check", { text, section: state.section }) : []; }
-  catch { state.reports = []; }
-  if (state.current >= paras().length) state.current = Math.max(0, paras().length - 1);
-  renderSections();
-  renderPaper();
-  renderOutline();
-  renderSide();
+// ── Sheets ─────────────────────────────────────────────
+const SHEETS = { actTemplate: "sheetTemplate", actDb: "sheetDb", actSettings: "sheetSettings" };
+
+function openSheet(id) {
+  Object.entries(SHEETS).forEach(([btn, sheet]) => {
+    const on = sheet === id;
+    $(`#${sheet}`).hidden = !on;
+    $(`#${btn}`).setAttribute("aria-pressed", String(on));
+  });
+  if (id === "sheetDb") openDb();
+  if (id === "sheetSettings") renderSettings();
+  if (id === "sheetTemplate") renderTemplates();
+}
+function closeSheets() {
+  if (state.db.dirty.size && !$("#sheetDb").hidden && !confirm("資料庫有未儲存的修改，仍要關閉？")) return;
+  openSheet(null);
+}
+
+// file menu
+function toggleFileMenu() {
+  const m = $("#fileMenu");
+  if (!m.hidden) { m.hidden = true; return; }
+  m.innerHTML = "";
+  const papers = state.workspace?.papers ?? [];
+  if (!papers.length) m.append(el("div", "empty", "工作區的 papers/ 沒有論文"));
+  papers.forEach((name) => {
+    const b = el("button", "", name);
+    b.setAttribute("aria-current", String(name === state.paper?.name));
+    b.onclick = () => { m.hidden = true; openPaper(name); };
+    m.append(b);
+  });
+  const r = $("#actFile").getBoundingClientRect();
+  m.style.top = `${r.bottom + 4}px`;
+  m.style.left = `${r.left}px`;
+  m.hidden = false;
+}
+
+// templates
+function renderTemplates() {
+  const ul = $("#publishers");
+  ul.innerHTML = "";
+  const pubs = state.workspace?.publishers ?? [];
+  if (!pubs.length) ul.append(el("li", "empty", "publishers/ 目前是空的"));
+  pubs.forEach((p) => ul.append(el("li", "", p)));
+}
+
+// settings
+async function renderSettings() {
+  try { state.claude = await api("/api/claude"); } catch {}
+  const c = state.claude;
+  const st = $("#claudeState");
+  st.className = c?.configured ? "ok" : "";
+  st.textContent = c?.configured ? (c.source === "env" ? "已連接（環境變數）" : "已連接（系統金鑰圈）") : "未設定";
+  const sel = $("#claudeModel");
+  if (c && !sel.options.length) c.models.forEach((m) => sel.append(new Option(m, m)));
+  if (c) sel.value = c.model;
+  const e = state.engine;
+  $("#engineState").textContent = e?.connected ? `已連接 ${e.name}` : "未連接";
+  $("#engineState").className = e?.connected ? "ok" : "";
+  $("#wsPath").textContent = (state.workspace?.root ?? "—") + (state.workspace?.demo ? "（示範）" : "");
+}
+
+async function saveClaude(body) {
+  try { state.claude = await api("/api/settings/claude", body); flash("已更新 Claude 設定"); }
+  catch (e) { flash(e.message); }
+  $("#claudeKey").value = "";
+  renderSettings();
   renderStatus();
 }
 
-async function loadProfile() {
-  const chips = $("#profileChips");
-  try {
-    const p = await api("/api/profile");
-    state.profile = p;
-    chips.innerHTML = "";
-    const name = document.createElement("span");
-    name.className = "chip";
-    name.textContent = p.error ? "設定檔讀取失敗" : p.name;
-    name.title = p.error ?? p.path;
-    chips.append(name);
-    if (p.demo) {
-      const d = document.createElement("span");
-      d.className = "chip warn";
-      d.textContent = "示範資料";
-      d.title = "尚未指定你的私人設定檔，目前使用內建範本";
-      chips.append(d);
-    }
-    if (p.issues.length) {
-      const i = document.createElement("span");
-      i.className = "chip warn";
-      i.textContent = `${p.issues.length} 筆格式問題`;
-      i.title = p.issues.map((x) => `${x.file}:${x.line} ${x.column ?? ""} ${x.message}`).join("\n");
-      chips.append(i);
-    }
-    const fn = $("#cFunction");
-    p.functions.forEach((f) => fn.append(new Option(f.replace(/_/g, " "), f)));
-  } catch {
-    chips.innerHTML = `<span class="chip warn">伺服器未啟動</span>`;
+// ── Database editor ────────────────────────────────────
+async function openDb() {
+  const tabs = $("#dbTabs");
+  if (!tabs.children.length) {
+    TABLES.forEach(([name, label]) => {
+      const b = el("button");
+      b.setAttribute("role", "tab");
+      b.dataset.name = name;
+      b.append(label, el("span", "c", ""));
+      b.onclick = () => showTable(name);
+      tabs.append(b);
+    });
+    const ds = $("#dbSection");
+    ROLES.forEach((r) => ds.append(new Option(r, r)));
+    const dc = $("#dcSection");
+    ROLES.forEach((r) => dc.append(new Option(r, r)));
   }
-  // Soft-rule messages, for the pending list.
+  await Promise.all(TABLES.map(async ([name]) => {
+    if (!state.db.dirty.has(name)) {
+      try { state.db.tables[name] = await api(`/api/tables/${name}`); } catch { state.db.tables[name] = { headers: [], rows: [] }; }
+    }
+  }));
+  $("#dcSection").value = roleOf(curSection()?.title ?? "Any");
+  showTable(state.db.name);
+}
+
+const COL_CLASS = { id: "id", priority: "short", type: "short", kind: "short", position: "short", severity: "short", threshold: "short" };
+
+function showTable(name) {
+  state.db.name = name;
+  document.querySelectorAll("#dbTabs button").forEach((b) => {
+    b.setAttribute("aria-selected", String(b.dataset.name === name));
+    b.querySelector(".c").textContent = state.db.tables[b.dataset.name]?.rows.length ?? "";
+  });
+  const t = state.db.tables[name];
+  const grid = $("#dbGrid");
+  grid.innerHTML = "";
+  const thead = el("thead"); const hr = el("tr");
+  t.headers.forEach((h) => hr.append(el("th", "", h)));
+  hr.append(el("th", "", ""));
+  thead.append(hr);
+  const tbody = el("tbody");
+  t.rows.forEach((row, ri) => tbody.append(rowEl(t, row, ri)));
+  grid.append(thead, tbody);
+  $("#dbSection").hidden = !t.headers.includes("section");
+  $("#dbDirty").hidden = !state.db.dirty.has(name);
+  const iss = state.db.issues[name] ?? [];
+  $("#dbIssues").textContent = iss.map((i) => `第 ${i.line} 行 ${i.column ?? ""}：${i.message}`).join("　");
+  applyFilter();
+}
+
+function rowEl(t, row, ri) {
+  const tr = el("tr");
+  if (row._new) tr.className = "new";
+  t.headers.forEach((h, ci) => {
+    const td = el("td", COL_CLASS[h] ?? "");
+    const ta = el("textarea", "cell");
+    ta.rows = 1;
+    ta.value = row[ci] ?? "";
+    ta.oninput = () => { row[ci] = ta.value; markDirty(); };
+    td.append(ta);
+    tr.append(td);
+  });
+  const td = el("td");
+  const del = el("button", "del", "✕");
+  del.title = "刪除這一列";
+  del.onclick = () => { t.rows.splice(ri, 1); markDirty(); showTable(state.db.name); };
+  td.append(del);
+  tr.append(td);
+  return tr;
+}
+
+function markDirty(name = state.db.name) {
+  state.db.dirty.add(name);
+  if (name === state.db.name) $("#dbDirty").hidden = false;
+}
+
+function applyFilter() {
+  const q = $("#dbFilter").value.trim().toLowerCase();
+  const sec = $("#dbSection").value;
+  const t = state.db.tables[state.db.name];
+  const si = t.headers.indexOf("section");
+  document.querySelectorAll("#dbGrid tbody tr").forEach((tr, i) => {
+    const row = t.rows[i];
+    const okQ = !q || row.some((c) => String(c).toLowerCase().includes(q));
+    const okS = !sec || si < 0 || row[si] === sec || row[si] === "Any";
+    tr.hidden = !(okQ && okS);
+  });
+}
+
+function nextId(t, prefix) {
+  const ii = t.headers.indexOf("id");
+  const max = Math.max(0, ...t.rows.map((r) => parseInt(String(r[ii] ?? "").replace(prefix, ""), 10)).filter((n) => !isNaN(n)));
+  return `${prefix}${String(max + 1).padStart(3, "0")}`;
+}
+const PREFIX = { "phrases.csv": "P", "expressions.csv": "X", "rules.csv": "R", "exemplars.csv": "E", "equations.csv": "Q" };
+
+function addRow(name, values = {}) {
+  const t = state.db.tables[name];
+  const row = t.headers.map(() => "");
+  if (t.headers.includes("id") && PREFIX[name]) row[t.headers.indexOf("id")] = nextId(t, PREFIX[name]);
+  Object.entries(values).forEach(([k, v]) => { const i = t.headers.indexOf(k); if (i >= 0) row[i] = v; });
+  if (name === "phrases.csv" && !values.priority) row[t.headers.indexOf("priority")] = "3";
+  row._new = true;
+  t.rows.push(row);
+  markDirty(name);
+  return row;
+}
+
+async function saveDb() {
+  const names = [...state.db.dirty];
+  for (const name of names) {
+    const t = state.db.tables[name];
+    try {
+      state.db.issues[name] = await api(`/api/tables/${name}`, { headers: t.headers, rows: t.rows.map((r) => [...r]) }, "PUT");
+      state.db.dirty.delete(name);
+      t.rows.forEach((r) => delete r._new);
+    } catch (e) { flash(`${name} 儲存失敗：${e.message}`); }
+  }
+  try { state.profile = await api("/api/profile"); } catch {}
+  showTable(state.db.name);
+  const n = Object.values(state.db.issues).flat().length;
+  flash(n ? `已儲存，有 ${n} 筆格式問題` : "已儲存");
+}
+
+// decompose
+async function decompose() {
+  const text = $("#dcText").value.trim();
+  if (!text) { $("#dcText").focus(); return; }
+  const out = $("#dcOut");
+  const btn = $("#dcRun");
+  btn.disabled = true; btn.textContent = "拆解中";
+  out.innerHTML = "";
   try {
-    const r = await fetch("/api/profile/rules");
-    if (r.ok) state.profile.rules_by_id = await r.json();
-  } catch {}
+    const p = await api("/api/decompose", { text, section: $("#dcSection").value });
+    renderProposals(p);
+  } catch (e) {
+    out.append(el("p", "note", e.message));
+  } finally { btn.disabled = false; btn.textContent = "拆解"; }
+}
+
+function renderProposals(p) {
+  const out = $("#dcOut");
+  out.innerHTML = "";
+  const groups = [
+    ["phrases.csv", "句型", p.phrases, (x) => [`${x.section} · ${x.function} · ${x.position}`, x.template, x.example]],
+    ["expressions.csv", "片語", p.expressions, (x) => [`${x.kind}${x.section ? " · " + x.section : ""}`, x.text, x.usage]],
+  ];
+  const picks = [];
+  groups.forEach(([name, label, items, show]) => {
+    if (!items.length) return;
+    const head = el("div", "prop-head"); head.append(label, el("span", "c", String(items.length)));
+    const ul = el("ul", "prop");
+    items.forEach((x) => {
+      const li = el("li");
+      const cb = el("input"); cb.type = "checkbox"; cb.checked = true;
+      const [meta, main, sub] = show(x);
+      const body = el("div");
+      const t = el("div", "t"); t.append(name === "phrases.csv" ? slotted(main) : main);
+      body.append(el("div", "meta", meta), t);
+      if (sub) body.append(el("div", "u", sub));
+      li.append(cb, body);
+      ul.append(li);
+      picks.push([cb, name, x]);
+    });
+    out.append(head, ul);
+  });
+  const add = el("button", "primary small", "加入勾選項目");
+  add.style.marginTop = "8px";
+  add.onclick = () => {
+    let n = 0;
+    picks.filter(([cb]) => cb.checked).forEach(([, name, x]) => {
+      if (name === "phrases.csv") addRow(name, { section: x.section, function: x.function, position: x.position, template: x.template, example: x.example, tags: (x.tags ?? []).join(";") });
+      else addRow(name, { kind: x.kind, text: x.text, usage: x.usage, section: x.section, example: x.example });
+      n++;
+    });
+    out.innerHTML = "";
+    out.append(el("p", "note", `已加入 ${n} 筆，按「儲存」寫入資料庫。`));
+    showTable(state.db.name);
+  };
+  out.append(add);
 }
 
 // ── Wiring ─────────────────────────────────────────────
@@ -413,9 +636,7 @@ function wire() {
       const was = h.getAttribute("aria-expanded") === "true";
       closeTip();
       if (was) return;
-      tip = document.createElement("div");
-      tip.className = "tip";
-      tip.textContent = h.dataset.tip;
+      tip = el("div", "tip", h.dataset.tip);
       document.body.append(tip);
       const r = h.getBoundingClientRect();
       tip.style.top = `${r.bottom + 6}px`;
@@ -423,17 +644,28 @@ function wire() {
       h.setAttribute("aria-expanded", "true");
     };
   });
-  document.addEventListener("click", closeTip);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTip(); });
-
-  document.querySelectorAll(".theme[data-theme]").forEach((b) => {
-    b.onclick = () => { store.set("pc.theme", b.dataset.theme); applyTheme(); };
+  document.addEventListener("click", (e) => {
+    closeTip();
+    if (!e.target.closest("#fileMenu, #actFile")) $("#fileMenu").hidden = true;
   });
-  $("#mode").onclick = () => {
-    store.set("pc.mode", document.documentElement.dataset.mode === "dark" ? "light" : "dark");
-    applyTheme();
-  };
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeTip(); $("#fileMenu").hidden = true; }
+    if ((e.ctrlKey || e.metaKey) && e.key === "s" && !$("#sheetDb").hidden) { e.preventDefault(); saveDb(); }
+  });
+
+  $("#actFile").onclick = toggleFileMenu;
+  Object.entries(SHEETS).forEach(([btn, sheet]) => {
+    $(`#${btn}`).onclick = () => ($(`#${sheet}`).hidden ? openSheet(sheet) : closeSheets());
+  });
+  document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = closeSheets));
+
+  document.querySelectorAll(".theme[data-theme]").forEach((b) => { b.onclick = () => { store.set("pc.theme", b.dataset.theme); applyTheme(); }; });
+  $("#mode").onclick = () => { store.set("pc.mode", document.documentElement.dataset.mode === "dark" ? "light" : "dark"); applyTheme(); };
   $("#dimPaper").onclick = () => { store.set("pc.dim", !store.get("pc.dim", false)); applyTheme(); };
+
+  $("#claudeSave").onclick = () => { const k = $("#claudeKey").value.trim(); if (k) saveClaude({ key: k }); };
+  $("#claudeRemove").onclick = () => saveClaude({ key: "" });
+  $("#claudeModel").onchange = () => saveClaude({ model: $("#claudeModel").value });
 
   document.querySelectorAll(".seg").forEach((s) => {
     s.querySelectorAll("button").forEach((b) => {
@@ -442,13 +674,49 @@ function wire() {
   });
   $("#generate").onclick = compose;
   $("#points").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) compose(); };
+
+  $("#dbFilter").oninput = applyFilter;
+  $("#dbSection").onchange = applyFilter;
+  $("#dbAdd").onclick = () => {
+    const sec = $("#dbSection").value;
+    addRow(state.db.name, sec ? { section: sec } : {});
+    showTable(state.db.name);
+    const rows = document.querySelectorAll("#dbGrid tbody tr");
+    rows[rows.length - 1]?.querySelector(".cell:not([value])")?.focus();
+  };
+  $("#dbSave").onclick = saveDb;
+  $("#dcRun").onclick = decompose;
 }
 
-async function loadEngine() {
-  try { state.engine = await api("/api/engine"); } catch { state.engine = null; }
+async function boot() {
+  applyTheme();
+  wire();
+  try { state.workspace = await api("/api/workspace"); } catch {}
+  try {
+    state.profile = await api("/api/profile");
+    state.ruleText = await api("/api/profile/rules");
+    const chips = $("#profileChips");
+    chips.innerHTML = "";
+    const name = el("span", "chip", state.profile.error ? "資料庫讀取失敗" : state.profile.name);
+    name.title = state.profile.error ?? state.profile.path;
+    chips.append(name);
+    if (state.profile.demo) { const d = el("span", "chip warn", "示範資料"); d.title = "尚未指定你的私人工作區"; chips.append(d); }
+    if (state.profile.issues.length) {
+      const i = el("span", "chip warn", `${state.profile.issues.length} 筆格式問題`);
+      i.title = state.profile.issues.map((x) => `${x.file}:${x.line} ${x.column ?? ""} ${x.message}`).join("\n");
+      chips.append(i);
+    }
+    state.profile.functions.forEach((f) => $("#cFunction").append(new Option(f.replace(/_/g, " "), f)));
+  } catch {
+    $("#profileChips").innerHTML = '<span class="chip warn">伺服器未啟動</span>';
+  }
+  const papers = state.workspace?.papers ?? [];
+  const last = store.get("pc.paper", null);
+  if (papers.length) await openPaper(papers.includes(last) ? last : papers[0]);
+  else render();
+  try { state.engine = await api("/api/engine"); } catch {}
+  try { state.claude = await api("/api/claude"); } catch {}
   renderStatus();
 }
 
-applyTheme();
-wire();
-loadProfile().then(refresh).then(loadEngine);
+boot();

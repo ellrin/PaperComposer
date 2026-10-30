@@ -61,6 +61,8 @@ model = "gemma-4-12b"
 
 或用環境變數 `PAPERCOMPOSER_LLM_URL`、`PAPERCOMPOSER_LLM_MODEL`。未連接時，問答框仍會列出參考句型，並可複製完整提示詞到其他模型使用。
 
+**Claude**：在「設定」貼上 API key，key 只存在系統金鑰圈（Windows 認證管理員、macOS 鑰匙圈），不寫入任何檔案；也可以用環境變數 `ANTHROPIC_API_KEY`。資料庫的「拆解」功能優先使用 Claude，未設定時改用本機模型。
+
 ## 專案結構
 
 ```
@@ -83,6 +85,12 @@ scripts/            Git hooks
 | POST | `/api/check` `{ text, section }` | 逐段檢查 |
 | GET | `/api/engine` | 模型連線狀態 |
 | POST | `/api/compose` `{ points, section, function, min_words, max_words, language, before, after }` | 一次性段落生成 |
+| GET | `/api/papers/{name}` | 論文各章節與段落 |
+| PUT | `/api/papers/{name}/sections/{file}` `{ title, paragraphs }` | 儲存章節（一句一行） |
+| GET / PUT | `/api/tables/{file}` | 讀寫資料庫 CSV（句型、片語、用詞、規則、範例、公式） |
+| POST | `/api/decompose` `{ text, section }` | 把句子或段落拆成句型與片語建議 |
+| GET | `/api/claude` | Claude 連線狀態 |
+| POST | `/api/settings/claude` `{ key, model }` | 存入或移除 API key、選擇模型 |
 
 ## 防止洩漏個人資料
 

@@ -176,6 +176,7 @@ mod tests {
             root: Default::default(),
             manifest: Manifest { name: "t".into(), schema_version: 1, language: "en".into() },
             phrases: vec![],
+            expressions: vec![],
             vocabulary: vec![VocabEntry { avoid: "utilize".into(), prefer: "use".into(), note: String::new() }],
             rules: vec![
                 rule("R1", "sentence_count", "2-4", "warning"),

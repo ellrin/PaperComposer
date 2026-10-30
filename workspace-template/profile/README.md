@@ -23,6 +23,7 @@ The config file is outside every repository, so your path is never committed.
 | --- | --- |
 | `profile.toml` | Name, `schema_version`, default language |
 | `phrases.csv` | Sentence patterns you like to use |
+| `expressions.csv` | Opening connectives, collocations and short phrases |
 | `vocabulary.csv` | Words to avoid and what to write instead |
 | `rules.csv` | Paragraph checks |
 | `exemplars.csv` | Whole paragraphs that show your voice |
@@ -42,6 +43,19 @@ Edit them in any spreadsheet app; save as UTF-8 CSV.
 | `example` | no | A real sentence using the pattern |
 | `tags` | no | Free tags, separated by `;` |
 | `priority` | no | 1–5, higher is suggested first (default 3) |
+
+### expressions.csv
+
+| Column | Meaning |
+| --- | --- |
+| `id` | Unique id, e.g. `X001` |
+| `kind` | `connective` (opens a sentence), `collocation` or `phrase` |
+| `text` | The expression itself, e.g. `Taken together,` |
+| `usage` | One line on when to use it |
+| `section`, `example`, `tags` | Optional, as in phrases.csv |
+
+The database editor's decompose tool fills this file and phrases.csv from a
+sentence or paragraph you paste in.
 
 ### vocabulary.csv
 

@@ -12,22 +12,27 @@
 <div class="app">
   <header class="top">
     <div class="brand">PAPER<b>/</b>COMPOSER</div>
-    <nav class="sections" id="sections" aria-label="章節"></nav>
+    <nav class="actions-top" aria-label="主要操作">
+      <button class="act" id="actFile" aria-haspopup="true"><span class="n">01</span>檔案<span class="val" id="paperName">—</span></button>
+      <button class="act" id="actTemplate"><span class="n">02</span>模板</button>
+      <button class="act" id="actDb"><span class="n">03</span>資料庫</button>
+      <button class="act" id="actSettings"><span class="n">04</span>設定</button>
+    </nav>
     <div class="top-right" id="profileChips"></div>
   </header>
 
-  <aside class="left" aria-label="段落大綱">
-    <h2 class="panel-title"><span class="step" id="sectionStep"></span><span id="sectionName"></span></h2>
-    <ol class="outline" id="outline"></ol>
+  <aside class="left" aria-label="導覽">
+    <h2 class="panel-title" id="navTitle"></h2>
+    <ol class="nav" id="nav"></ol>
   </aside>
 
-  <main class="page-area">
+  <main class="page-area" id="pageArea">
     <article class="paper" id="paper"></article>
     <div class="statusbar" id="statusbar"></div>
   </main>
 
   <aside class="right" aria-label="寫作助手">
-    <section class="block" data-open="true" id="blockCompose">
+    <section class="block" data-open="true">
       <div class="block-head">
         <span class="n">01</span><h3>寫作</h3>
         <button class="help" data-tip="條列重點，一行一點；以 ! 開頭表示強調。模型只能用你句型庫裡的寫法組成段落。">?</button>
@@ -39,15 +44,15 @@
           <label><span>功能</span><select id="cFunction"><option value="">自動</option></select></label>
           <label><span>字數</span><span class="range"><input id="cMin" type="number" min="20" step="10" value="120"><i>–</i><input id="cMax" type="number" min="20" step="10" value="180"></span></label>
           <label><span>語言</span><span class="seg" id="cLang"><button data-v="en" aria-pressed="true">EN</button><button data-v="zh" aria-pressed="false">中</button></span></label>
-          <label class="wide"><span>前後段</span><span class="seg" id="cContext"><button data-v="on" aria-pressed="true">連貫</button><button data-v="off" aria-pressed="false">獨立</button></span></label>
+          <label><span>前後段</span><span class="seg" id="cContext"><button data-v="on" aria-pressed="true">連貫</button><button data-v="off" aria-pressed="false">獨立</button></span></label>
         </div>
         <textarea id="points" rows="5" placeholder="- ! 主要發現&#10;- 次要重點"></textarea>
-        <button class="primary" id="generate">生成<kbd>Ctrl ↵</kbd></button>
+        <button class="primary" id="generate"><span>生成</span><kbd>Ctrl ↵</kbd></button>
         <div id="result"></div>
       </div>
     </section>
 
-    <section class="block" data-open="true" id="blockCheck">
+    <section class="block" data-open="true">
       <div class="block-head">
         <span class="n">02</span><h3>檢查</h3>
         <button class="help" data-tip="目前段落觸發的規則。灰色是需要模型的軟規則，連接引擎後才會判讀。">?</button>
@@ -55,25 +60,85 @@
       </div>
       <div class="block-body"><ul class="findings" id="findings"></ul></div>
     </section>
+  </aside>
 
-    <section class="block" data-open="false" id="blockTheme">
-      <div class="block-head">
-        <span class="n">03</span><h3>介面主題</h3>
-        <button class="toggle" aria-label="展開或收合">+</button>
+  <!-- Sheets: full-height panels under the top bar -->
+  <section class="sheet" id="sheetDb" hidden aria-label="資料庫">
+    <div class="sheet-head">
+      <h2><span class="n">03</span>資料庫</h2>
+      <div class="tabs" id="dbTabs" role="tablist"></div>
+      <button class="x" data-close aria-label="關閉">✕</button>
+    </div>
+    <div class="db">
+      <div class="db-main">
+        <div class="db-bar">
+          <input type="search" id="dbFilter" placeholder="篩選">
+          <select id="dbSection" aria-label="章節"><option value="">全部章節</option></select>
+          <span class="dirty" id="dbDirty" hidden>未儲存</span>
+          <button class="ghost" id="dbAdd">＋ 新增</button>
+          <button class="primary small" id="dbSave">儲存</button>
+        </div>
+        <div class="db-issues" id="dbIssues"></div>
+        <div class="grid-wrap"><table class="grid" id="dbGrid"></table></div>
       </div>
-      <div class="block-body">
-        <div class="themes" id="themes">
+      <aside class="db-side">
+        <div class="block-head">
+          <span class="n">↯</span><h3>拆解</h3>
+          <button class="help" data-tip="貼上欣賞的句子或段落，Claude 會拆成句型、開頭連接詞與片語。勾選要的項目加入資料庫，再按儲存。">?</button>
+        </div>
+        <textarea id="dcText" rows="7" placeholder="貼上句子或段落"></textarea>
+        <div class="row">
+          <select id="dcSection" aria-label="章節"></select>
+          <button class="primary small" id="dcRun">拆解</button>
+        </div>
+        <div id="dcOut"></div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheetSettings" hidden aria-label="設定">
+    <div class="sheet-head">
+      <h2><span class="n">04</span>設定</h2>
+      <button class="x" data-close aria-label="關閉">✕</button>
+    </div>
+    <div class="settings">
+      <section class="set">
+        <h3><span class="n">01</span>介面主題</h3>
+        <div class="themes">
           <button class="theme" data-theme="orange"><span class="swatch"><i style="background:#27272a"></i><i style="background:#ff6b35"></i><i style="background:#f0f0f1"></i></span>深灰橘</button>
           <button class="theme" data-theme="night"><span class="swatch"><i style="background:#0c0b24"></i><i style="background:#5b3df5"></i><i style="background:#f3e600"></i></span>藍紫黃</button>
           <button class="theme" data-theme="terminal"><span class="swatch"><i style="background:#080d0a"></i><i style="background:#11965a"></i><i style="background:#2ef08a"></i></span>綠黑</button>
-        </div>
-        <div class="themes" style="margin-top:8px">
-          <button class="theme" id="dimPaper" aria-pressed="false">調暗紙張</button>
           <button class="mode" id="mode" aria-label="切換白天或黑夜"></button>
+          <button class="theme" id="dimPaper" aria-pressed="false">調暗紙張</button>
         </div>
-      </div>
-    </section>
-  </aside>
+      </section>
+      <section class="set">
+        <h3><span class="n">02</span>Claude <button class="help" data-tip="API key 只存在這台電腦的系統金鑰圈，不會寫進任何檔案或 repo。">?</button></h3>
+        <div class="kv"><span>狀態</span><span id="claudeState"></span></div>
+        <div class="kv"><span>API key</span><span class="inline"><input type="password" id="claudeKey" placeholder="sk-ant-…" autocomplete="off"><button class="ghost" id="claudeSave">儲存</button><button class="ghost" id="claudeRemove">移除</button></span></div>
+        <div class="kv"><span>模型</span><select id="claudeModel"></select></div>
+      </section>
+      <section class="set">
+        <h3><span class="n">03</span>本機模型</h3>
+        <div class="kv"><span>狀態</span><span id="engineState"></span></div>
+      </section>
+      <section class="set">
+        <h3><span class="n">04</span>工作區</h3>
+        <div class="kv"><span>位置</span><code id="wsPath"></code></div>
+      </section>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheetTemplate" hidden aria-label="模板">
+    <div class="sheet-head">
+      <h2><span class="n">02</span>模板</h2>
+      <button class="help" data-tip="把出版社的 .cls 與範例 .tex 放進工作區的 publishers/〈名稱〉/。匯入與欄位對應即將加入。">?</button>
+      <button class="x" data-close aria-label="關閉">✕</button>
+    </div>
+    <ul class="list" id="publishers"></ul>
+  </section>
+
+  <div class="menu" id="fileMenu" hidden role="menu"></div>
 </div>
 <script src="app.js"></script>
 </body>
