@@ -124,9 +124,84 @@
         <div class="kv"><span>狀態</span><span id="engineState"></span></div>
       </section>
       <section class="set">
+        <button class="ghost" id="openSetup">開啟設定精靈</button>
+      </section>
+      <section class="set">
         <h3><span class="n">04</span>工作區</h3>
         <div class="kv"><span>位置</span><code id="wsPath"></code></div>
       </section>
+    </div>
+  </section>
+
+  <section class="sheet" id="sheetSetup" hidden aria-label="設定精靈">
+    <div class="sheet-head">
+      <h2><span class="n">00</span>設定精靈</h2>
+      <div class="tabs" id="wzTabs" role="tablist">
+        <button data-step="0"><span class="c">01</span>工作區<span class="st"></span></button>
+        <button data-step="1"><span class="c">02</span>Git<span class="st"></span></button>
+        <button data-step="2"><span class="c">03</span>本機模型<span class="st"></span></button>
+        <button data-step="3"><span class="c">04</span>Claude<span class="st"></span></button>
+      </div>
+      <button class="x" data-close aria-label="關閉">✕</button>
+    </div>
+    <div class="wizard">
+      <!-- 01 workspace -->
+      <section class="step" data-step="0">
+        <div class="now" id="wzWsNow"></div>
+        <div class="seg wide" id="wzWsMode">
+          <button data-v="open" aria-pressed="true">開啟資料夾</button>
+          <button data-v="clone" aria-pressed="false">Clone 我的 repo</button>
+          <button data-v="new" aria-pressed="false">建立新的</button>
+        </div>
+        <div class="form" data-mode="open">
+          <label><span>資料夾</span><input id="wzOpenPath" placeholder="C:\Users\me\Documents\my-private-workspace"></label>
+          <label class="check"><input type="checkbox" id="wzOpenInit" checked><span>補上缺少的資料夾<button class="help" data-tip="只會新增範本裡有、但你資料夾裡沒有的檔案，不會覆蓋任何現有檔案。">?</button></span></label>
+          <button class="primary small" id="wzOpen">使用這個資料夾</button>
+        </div>
+        <div class="form" data-mode="clone" hidden>
+          <label><span>repo 網址</span><input id="wzCloneUrl" placeholder="https://github.com/you/your-private-workspace.git"><em class="vis" id="wzCloneVis"></em></label>
+          <label><span>存放位置</span><input id="wzCloneParent" placeholder="C:\Users\me\Documents"></label>
+          <button class="primary small" id="wzClone">Clone</button>
+        </div>
+        <div class="form" data-mode="new" hidden>
+          <label><span>新資料夾</span><input id="wzNewPath" placeholder="C:\Users\me\Documents\my-private-workspace"></label>
+          <label><span>遠端（選填）</span><input id="wzNewRemote" placeholder="你自己建立的空白 private repo 網址"><em class="vis" id="wzNewVis"></em></label>
+          <button class="primary small" id="wzNew">從範本建立</button>
+        </div>
+      </section>
+
+      <!-- 02 git -->
+      <section class="step" data-step="1" hidden>
+        <div class="now" id="wzGitNow"></div>
+        <div class="form">
+          <label><span>作者名稱</span><input id="wzGitName"></label>
+          <label><span>email</span><input id="wzGitEmail" placeholder="可用 GitHub 的 noreply 信箱"></label>
+          <button class="primary small" id="wzGitSave">儲存</button>
+        </div>
+      </section>
+
+      <!-- 03 local model -->
+      <section class="step" data-step="2" hidden>
+        <div class="now" id="wzSys"></div>
+        <ul class="models" id="wzModels"></ul>
+        <div id="wzPlan"></div>
+      </section>
+
+      <!-- 04 claude -->
+      <section class="step" data-step="3" hidden>
+        <div class="now" id="wzClaudeNow"></div>
+        <div class="form">
+          <label><span>API key</span><input type="password" id="wzClaudeKey" placeholder="sk-ant-…" autocomplete="off"></label>
+          <label><span>模型</span><select id="wzClaudeModel"></select></label>
+          <button class="primary small" id="wzClaudeSave">儲存</button>
+        </div>
+      </section>
+
+      <div class="wz-foot">
+        <button class="ghost" id="wzPrev">上一步</button>
+        <button class="ghost" id="wzSkip">略過</button>
+        <button class="primary small" id="wzNext">下一步</button>
+      </div>
     </div>
   </section>
 
@@ -144,5 +219,6 @@
 <script src="vendor/katex/katex.min.js"></script>
 <script src="tex.js"></script>
 <script src="app.js"></script>
+<script src="setup.js"></script>
 </body>
 </html>

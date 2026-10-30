@@ -47,6 +47,12 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running PaperComposer");
+        .build(tauri::generate_context!())
+        .expect("error while building PaperComposer")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Exit = event {
+                // The local model server must not outlive the app.
+                pc_server::models::kill_runtime();
+            }
+        });
 }

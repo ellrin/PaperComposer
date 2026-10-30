@@ -14,6 +14,7 @@
 pub mod claude;
 pub mod engine;
 pub mod git;
+pub mod models;
 
 use axum::{
     extract::{Path as AxPath, Query as AxQuery, State},
@@ -66,7 +67,8 @@ struct Loaded {
 
 struct AppState {
     loaded: RwLock<Loaded>,
-    engine: Engine,
+    engine: RwLock<Engine>,
+    models: Arc<models::Manager>,
     claude: RwLock<Claude>,
     paths: Paths,
 }
@@ -81,11 +83,29 @@ struct Config {
     profile_path: Option<PathBuf>,
     engine: Option<EngineConfig>,
     claude: Option<ClaudeConfig>,
+    model: Option<ModelConfig>,
 }
 
 #[derive(Deserialize, Default)]
 struct ClaudeConfig {
     model: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ModelConfig {
+    /// Catalog id of the local model to start with the app.
+    active: Option<String>,
+}
+
+/// Set a top-level `key = value` in config.toml.
+fn write_config_root(key: &str, value: &str) -> Result<(), String> {
+    let path = config_path().ok_or("no config folder on this system")?;
+    let mut doc: toml::Table = std::fs::read_to_string(&path).ok().and_then(|raw| raw.parse().ok()).unwrap_or_default();
+    doc.insert(key.to_string(), toml::Value::String(value.to_string()));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, toml::to_string(&doc).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -116,6 +136,23 @@ fn write_config_value(table: &str, key: &str, value: &str) -> Result<(), String>
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     std::fs::write(&path, toml::to_string(&doc).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// Copy files that do not exist yet; never overwrite the user's files.
+fn copy_missing(from: &Path, to: &Path) -> std::io::Result<usize> {
+    std::fs::create_dir_all(to)?;
+    let mut n = 0;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            n += copy_missing(&entry.path(), &target)?;
+        } else if !target.exists() {
+            std::fs::copy(entry.path(), target)?;
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -287,7 +324,7 @@ async fn check(State(s): State<Shared>, Json(b): Json<CheckBody>) -> impl IntoRe
 }
 
 async fn engine_status(State(s): State<Shared>) -> impl IntoResponse {
-    Json(s.engine.status().await)
+    Json(s.engine.read().await.status().await)
 }
 
 #[derive(Serialize)]
@@ -316,7 +353,7 @@ async fn compose_paragraph(State(s): State<Shared>, Json(req): Json<ComposeReque
     if points.is_empty() {
         return (StatusCode::BAD_REQUEST, "no points given").into_response();
     }
-    if !s.engine.configured() {
+    if !s.engine.read().await.configured() {
         return Json(ComposeReply {
             references: refs,
             draft: None,
@@ -331,7 +368,7 @@ async fn compose_paragraph(State(s): State<Shared>, Json(req): Json<ComposeReque
     let mut feedback: Option<String> = None;
     let mut last_err = None;
     for _ in 0..2 {
-        let reply = match s.engine.complete(&prompt, feedback.as_deref()).await {
+        let reply = match s.engine.read().await.complete(&prompt, feedback.as_deref()).await {
             Ok(r) => r,
             Err(e) => {
                 last_err = Some(e);
@@ -485,8 +522,8 @@ async fn decompose_text(State(s): State<Shared>, Json(b): Json<DecomposeBody>) -
         let c = s.claude.read().await;
         if c.status().configured {
             c.complete(&prompt).await
-        } else if s.engine.configured() {
-            s.engine.complete(&prompt, None).await
+        } else if s.engine.read().await.configured() {
+            s.engine.read().await.complete(&prompt, None).await
         } else {
             Err("需要先在設定中連接 Claude 或本機模型".into())
         }
@@ -549,17 +586,337 @@ async fn git_sync(State(s): State<Shared>, body: Option<Json<SyncBody>>) -> impl
     }
 }
 
+// ── Setup wizard ───────────────────────────────────────
+
+#[derive(Serialize)]
+struct GitTool {
+    installed: bool,
+    version: Option<String>,
+    name: Option<String>,
+    email: Option<String>,
+}
+
+async fn cmd_out(args: &[&str]) -> Option<String> {
+    let out = tokio::process::Command::new(args[0]).args(&args[1..]).env("GIT_TERMINAL_PROMPT", "0").output().await.ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+}
+
+async fn git_tool() -> GitTool {
+    let version = cmd_out(&["git", "--version"]).await;
+    GitTool {
+        installed: version.is_some(),
+        version,
+        name: cmd_out(&["git", "config", "--global", "user.name"]).await,
+        email: cmd_out(&["git", "config", "--global", "user.email"]).await,
+    }
+}
+
+async fn setup_status(State(s): State<Shared>) -> impl IntoResponse {
+    let cfg = read_config();
+    let env_ws = std::env::var("PAPERCOMPOSER_WORKSPACE").is_ok() || std::env::var("PAPERCOMPOSER_PROFILE").is_ok();
+    let (root, demo) = {
+        let l = s.loaded.read().await;
+        (l.workspace.clone(), l.demo)
+    };
+    let ws_git = match (&root, demo) {
+        (Some(r), false) => Some(git::status(r).await),
+        _ => None,
+    };
+    let sys = models::system_info().await;
+    let cat = models::catalog();
+    let recommended = models::recommend(&cat, &sys);
+    let pool = sys.memory_gb.max(sys.gpu_memory_gb.unwrap_or(0.0));
+    let installed: Vec<String> = models::installed().into_iter().map(|m| m.id).collect();
+    let running = s.models.runtime.lock().await.as_ref().map(|r| r.model_id.clone());
+    Json(serde_json::json!({
+        "first_run": !env_ws && cfg.workspace_path.is_none() && cfg.profile_path.is_none(),
+        "config_path": config_path().map(|p| p.display().to_string()),
+        "workspace": {
+            "root": root.as_ref().map(|r| r.display().to_string()),
+            "demo": demo,
+            "has_profile": root.as_ref().is_some_and(|r| r.join("profile/profile.toml").exists()),
+            "papers": root.as_ref().map(|r| subdirs(&r.join("papers")).len()).unwrap_or(0),
+            "git": ws_git,
+        },
+        "git_tool": git_tool().await,
+        "system": sys,
+        "models": cat.models.iter().map(|m| serde_json::json!({
+            "entry": m,
+            "fits": pool + 0.5 >= m.min_memory_gb as f32,
+            "installed": installed.contains(&m.id),
+        })).collect::<Vec<_>>(),
+        "recommended": recommended,
+        "runtime_installed": models::runtime_binary().is_some(),
+        "running": running,
+        "phase": s.models.phase.lock().await.clone(),
+        "engine": s.engine.read().await.status().await,
+        "claude": s.claude.read().await.status(),
+    }))
+}
+
+async fn use_workspace(s: &Shared, path: &Path, init: bool) -> Result<serde_json::Value, String> {
+    if !path.is_dir() {
+        return Err("資料夾不存在".into());
+    }
+    let added = if init { copy_missing(&s.paths.demo_workspace, path).map_err(|e| e.to_string())? } else { 0 };
+    if !path.join("profile/profile.toml").exists() {
+        return Err("這個資料夾沒有 profile/，請勾選「補上缺少的資料夾」".into());
+    }
+    let abs = path.canonicalize().unwrap_or(path.to_path_buf());
+    write_config_root("workspace_path", &abs.display().to_string())?;
+    *s.loaded.write().await = load(&s.paths);
+    Ok(serde_json::json!({ "root": abs.display().to_string(), "added": added }))
+}
+
+#[derive(Deserialize)]
+struct WorkspaceBody {
+    path: String,
+    #[serde(default)]
+    init: bool,
+}
+
+async fn setup_workspace(State(s): State<Shared>, Json(b): Json<WorkspaceBody>) -> impl IntoResponse {
+    match use_workspace(&s, Path::new(b.path.trim()), b.init).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct CloneBody {
+    url: String,
+    /// Folder that will contain the clone.
+    parent: String,
+}
+
+fn repo_name(url: &str) -> Option<String> {
+    let last = url.trim_end_matches('/').rsplit(['/', ':']).next()?;
+    let name = last.trim_end_matches(".git");
+    paper::safe_name(name).then(|| name.to_string())
+}
+
+async fn setup_clone(State(s): State<Shared>, Json(b): Json<CloneBody>) -> impl IntoResponse {
+    let url = b.url.trim();
+    let Some(name) = repo_name(url) else { return bad("無法從網址判斷 repo 名稱") };
+    let parent = PathBuf::from(b.parent.trim());
+    if !parent.is_dir() {
+        return bad("存放位置不存在");
+    }
+    let target = parent.join(&name);
+    if target.exists() {
+        return bad(&format!("{} 已經存在；若已 clone 過，請改用「開啟資料夾」", target.display()));
+    }
+    let out = tokio::process::Command::new("git")
+        .args(["clone", "--quiet", url])
+        .arg(&target)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .await;
+    match out {
+        Ok(o) if o.status.success() => match use_workspace(&s, &target, true).await {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => bad(&e),
+        },
+        Ok(o) => bad(&format!("clone 失敗：{}", String::from_utf8_lossy(&o.stderr).trim())),
+        Err(e) => bad(&format!("無法執行 git：{e}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct NewBody {
+    /// Folder to create (must not exist or be empty).
+    path: String,
+    /// Optional: the user's own empty private repository.
+    remote: Option<String>,
+}
+
+async fn setup_new(State(s): State<Shared>, Json(b): Json<NewBody>) -> impl IntoResponse {
+    let path = PathBuf::from(b.path.trim());
+    if path.exists() && std::fs::read_dir(&path).map(|mut d| d.next().is_some()).unwrap_or(true) {
+        return bad("資料夾已存在且不是空的");
+    }
+    if let Err(e) = copy_missing(&s.paths.demo_workspace, &path) {
+        return bad(&e.to_string());
+    }
+    let run = |args: Vec<String>| {
+        let p = path.clone();
+        async move {
+            let o = tokio::process::Command::new("git").args(&args).current_dir(&p).env("GIT_TERMINAL_PROMPT", "0").output().await;
+            match o {
+                Ok(o) if o.status.success() => Ok(()),
+                Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    };
+    let mut note = None;
+    if run(vec!["init".into(), "-q".into(), "-b".into(), "main".into()]).await.is_ok() {
+        let _ = run(vec!["add".into(), "-A".into()]).await;
+        if let Err(e) = run(vec!["commit".into(), "-q".into(), "-m".into(), "Create workspace".into()]).await {
+            note = Some(format!("已建立資料夾，但無法 commit：{e}"));
+        } else if let Some(r) = b.remote.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+            let _ = run(vec!["remote".into(), "add".into(), "origin".into(), r.into()]).await;
+            if let Err(e) = run(vec!["push".into(), "-q".into(), "-u".into(), "origin".into(), "main".into()]).await {
+                note = Some(format!("已建立，但推送到遠端失敗：{e}"));
+            }
+        }
+    }
+    match use_workspace(&s, &path, false).await {
+        Ok(mut v) => {
+            v["note"] = serde_json::json!(note);
+            Json(v).into_response()
+        }
+        Err(e) => bad(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct VisibilityQuery {
+    url: String,
+}
+
+/// For GitHub URLs: is the repository public? Anonymous lookup, so a private
+/// repository looks the same as a missing one (404) — both are fine here.
+async fn setup_visibility(AxQuery(q): AxQuery<VisibilityQuery>) -> impl IntoResponse {
+    let u = q.url.trim().trim_end_matches(".git");
+    let path = u
+        .split_once("github.com/")
+        .or_else(|| u.split_once("github.com:"))
+        .map(|(_, p)| p.trim_matches('/').to_string());
+    let Some(path) = path.filter(|p| p.split('/').count() == 2) else {
+        return Json(serde_json::json!({ "host": "other" }));
+    };
+    let api = std::env::var("PAPERCOMPOSER_GH_API").unwrap_or_else(|_| "https://api.github.com".into());
+    let r = reqwest::Client::builder().user_agent("PaperComposer").build().unwrap().get(format!("{api}/repos/{path}")).send().await;
+    let public = match r {
+        Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.ok().and_then(|v| v["private"].as_bool()).map(|p| !p),
+        Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => Some(false),
+        _ => None,
+    };
+    Json(serde_json::json!({ "host": "github", "public": public }))
+}
+
+#[derive(Deserialize)]
+struct IdentityBody {
+    name: String,
+    email: String,
+}
+
+async fn setup_git_identity(Json(b): Json<IdentityBody>) -> impl IntoResponse {
+    for (k, v) in [("user.name", b.name.trim()), ("user.email", b.email.trim())] {
+        if v.is_empty() {
+            return bad("名稱與 email 都要填");
+        }
+        if cmd_out(&["git", "config", "--global", k, v]).await.is_none() {
+            // `git config` prints nothing on success; check it took.
+            if cmd_out(&["git", "config", "--global", k]).await.as_deref() != Some(v) {
+                return bad("無法寫入 git 設定");
+            }
+        }
+    }
+    Json(git_tool().await).into_response()
+}
+
+// ── Local models ───────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ModelBody {
+    id: String,
+}
+
+async fn model_plan(Json(b): Json<ModelBody>) -> impl IntoResponse {
+    match models::plan(&b.id).await {
+        Ok(p) => Json(p).into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+async fn activate(s: &Shared, id: &str) -> Result<(), String> {
+    let url = models::start(&s.models, id).await?;
+    let name = models::catalog().models.into_iter().find(|m| m.id == id).map(|m| format!("{} {}", m.name, m.variant)).unwrap_or(id.into());
+    *s.engine.write().await = Engine::new(EngineConfig { url: Some(url), model: Some(name) });
+    write_config_value("model", "active", id)
+}
+
+/// Re-plans on the server (the client never supplies URLs), downloads, then starts.
+async fn model_install(State(s): State<Shared>, Json(b): Json<ModelBody>) -> impl IntoResponse {
+    if s.models.phase.lock().await.as_str() == "downloading" {
+        return (StatusCode::CONFLICT, "已有下載進行中").into_response();
+    }
+    let plan = match models::plan(&b.id).await {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
+    };
+    s.models.progress.lock().await.clear();
+    let s2 = s.clone();
+    tokio::spawn(async move {
+        if models::install(s2.models.clone(), plan).await.is_ok() {
+            if let Err(e) = activate(&s2, &b.id).await {
+                *s2.models.phase.lock().await = format!("error: {e}");
+            }
+        }
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn model_progress(State(s): State<Shared>) -> impl IntoResponse {
+    let files: Vec<models::Progress> = s.models.progress.lock().await.values().cloned().collect();
+    let running = s.models.runtime.lock().await.as_ref().map(|r| (r.model_id.clone(), r.url.clone()));
+    Json(serde_json::json!({ "phase": s.models.phase.lock().await.clone(), "files": files, "running": running }))
+}
+
+async fn model_start(State(s): State<Shared>, Json(b): Json<ModelBody>) -> impl IntoResponse {
+    match activate(&s, &b.id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+    }
+}
+
+async fn model_stop(State(s): State<Shared>) -> impl IntoResponse {
+    models::stop(&s.models).await;
+    *s.models.phase.lock().await = "idle".into();
+    *s.engine.write().await = Engine::new(EngineConfig::resolve(read_config().engine));
+    StatusCode::NO_CONTENT
+}
+
 pub fn router(paths: Paths) -> Router {
     let cfg = read_config();
-    let engine = Engine::new(EngineConfig::resolve(cfg.engine));
+    let engine_cfg = EngineConfig::resolve(cfg.engine);
+    let external = engine_cfg.url.is_some();
+    let engine = Engine::new(engine_cfg);
     let claude = Claude::new(cfg.claude.and_then(|c| c.model));
     let state: Shared = Arc::new(AppState {
         loaded: RwLock::new(load(&paths)),
-        engine,
+        engine: RwLock::new(engine),
+        models: Arc::new(models::Manager::default()),
         claude: RwLock::new(claude),
         paths: paths.clone(),
     });
+    models::register(state.models.clone());
+    // Start the chosen local model with the app, unless an external engine is set.
+    if let (false, Some(id)) = (external, cfg.model.and_then(|m| m.active)) {
+        if models::installed().iter().any(|m| m.id == id) {
+            let s = state.clone();
+            tokio::spawn(async move {
+                if let Err(e) = activate(&s, &id).await {
+                    eprintln!("local model: {e}");
+                }
+            });
+        }
+    }
     Router::new()
+        .route("/api/setup/status", get(setup_status))
+        .route("/api/setup/workspace", post(setup_workspace))
+        .route("/api/setup/clone", post(setup_clone))
+        .route("/api/setup/new", post(setup_new))
+        .route("/api/setup/visibility", get(setup_visibility))
+        .route("/api/setup/git-identity", post(setup_git_identity))
+        .route("/api/models/plan", post(model_plan))
+        .route("/api/models/install", post(model_install))
+        .route("/api/models/progress", get(model_progress))
+        .route("/api/models/start", post(model_start))
+        .route("/api/models/stop", post(model_stop))
+        .route("/api/models/catalog", get(|| async { Json(models::catalog()) }))
         .route("/api/git/status", get(git_status))
         .route("/api/git/pull", post(git_pull))
         .route("/api/git/sync", post(git_sync))

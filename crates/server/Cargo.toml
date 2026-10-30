@@ -15,5 +15,10 @@ axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "process", "time"] }
 tower-http = { version = "0.6", features = ["fs"] }
 dirs = "6"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+sysinfo = { version = "0.37", default-features = false, features = ["system"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"
+futures-util = "0.3"

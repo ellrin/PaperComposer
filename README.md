@@ -40,7 +40,17 @@ your-private-repo/
   prompts/      自訂提示詞（可選）
 ```
 
-告訴 App 位置（擇一）：
+第一次開啟 App 會出現**設定精靈**（之後可從「設定 → 重新設定」開啟），四個步驟都可略過：
+
+1. **工作區**：三選一，每位使用者都指向**自己的**私有 repo，App 不綁定任何特定帳號
+   - 開啟資料夾：已經在電腦上的工作區；缺少的資料夾與範本檔會自動補上（不覆蓋既有檔案）
+   - Clone 我的 repo：貼上你的私有 repo 網址；若偵測到是**公開** repo 會提醒先改成 private
+   - 建立新的：從範本建立新資料夾並 `git init`，可選擇填入遠端，第一次 commit 後直接 push
+2. **Git**：檢查是否安裝 Git、設定 commit 作者名稱與 email
+3. **本機模型**：偵測記憶體（含 Mac 統一記憶體與 NVIDIA 顯示卡），標示推薦與放不下的模型。按「準備下載」先列出要下載的檔案、大小與來源，**確認後才下載**；下載完成自動啟動並設為預設
+4. **Claude**：貼上 API key（只存在系統金鑰圈）
+
+也可以手動指定位置（擇一）：
 
 - 環境變數 `PAPERCOMPOSER_WORKSPACE=/path/to/your-private-repo`
 - 設定檔 `PaperComposer/config.toml` 寫入 `workspace_path = "/path/to/your-private-repo"`
@@ -65,7 +75,34 @@ your-private-repo/
 
 ## 連接模型
 
-段落生成使用任何 OpenAI 相容的端點，例如在本機用 llama.cpp、Ollama 或 LM Studio 跑 Gemma 4 12B：
+### 一鍵安裝的本機模型
+
+設定精靈第 3 步會從 Hugging Face 下載 GGUF 模型、從 GitHub 下載對應平台的 [llama.cpp](https://github.com/ggml-org/llama.cpp)（Windows 用 Vulkan 版，支援 NVIDIA／AMD／Intel 顯示卡；Mac 用 Metal 版），存在本機資料夾（Windows：`%APPDATA%\PaperComposer`；macOS：`~/Library/Application Support/PaperComposer`；Linux：`~/.local/share/PaperComposer`）。App 啟動時自動開啟上次使用的模型，關閉時一併結束。
+
+可選的模型列在 [`models/catalog.json`](models/catalog.json)，目前預設 Gemma 4 12B（Q8_0；記憶體較少時用 Q4_K_XL）。之後有新模型（例如 Gemma 5），在清單加一筆即可出現在精靈中：
+
+```json
+{
+  "id": "gemma-5-xx-q8",
+  "name": "Gemma 5 XX",
+  "variant": "Q8_0",
+  "summary": "新一代",
+  "repo": "unsloth/gemma-5-xx-it-GGUF",
+  "file_suffix": "Q8_0.gguf",
+  "mmproj_suffix": "mmproj-BF16.gguf",
+  "approx_gb": 13,
+  "min_memory_gb": 24,
+  "context": 32768,
+  "license": "…",
+  "vision": true
+}
+```
+
+檔名由 Hugging Face 的檔案清單比對 `file_suffix` 找出，不需要寫完整網址。不想改 repo 時，可把自己的 `catalog.json` 放在上述本機資料夾的 `models/` 底下，會取代內建清單。
+
+### 自己架設的模型
+
+也可以使用任何 OpenAI 相容的端點，例如 llama.cpp、Ollama、LM Studio，或家裡的另一台電腦：
 
 ```toml
 # config.toml
@@ -109,6 +146,16 @@ scripts/            Git hooks
 | GET | `/api/git/status` | 分支、遠端、未同步的檔案、領先或落後的 commit 數 |
 | POST | `/api/git/pull` | 從遠端更新（只做 fast-forward） |
 | POST | `/api/git/sync` `{ message? }` | commit 並 push |
+| GET | `/api/setup/status` | 設定精靈：工作區、Git、記憶體、模型、Claude 狀態 |
+| POST | `/api/setup/workspace` `{ path, init }` | 使用既有資料夾（可補上範本） |
+| POST | `/api/setup/clone` `{ url, parent }` | clone 自己的私有 repo |
+| POST | `/api/setup/new` `{ path, remote? }` | 從範本建立新工作區 |
+| GET | `/api/setup/visibility?url=` | 查詢 GitHub repo 是否公開 |
+| POST | `/api/setup/git-identity` `{ name, email }` | 設定 Git 作者 |
+| POST | `/api/models/plan` `{ id }` | 列出要下載的檔案、大小與來源 |
+| POST | `/api/models/install` `{ id }` | 下載並啟用模型 |
+| GET | `/api/models/progress` | 下載進度 |
+| POST | `/api/models/start` / `/api/models/stop` | 啟動或停止本機模型 |
 
 ## 防止洩漏個人資料
 

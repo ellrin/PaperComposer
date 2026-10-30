@@ -40,7 +40,8 @@ async function api(path, body, method) {
     : undefined;
   const r = await fetch(path, opts);
   if (!r.ok) throw new Error((await r.text()) || `${r.status}`);
-  return r.status === 204 ? null : r.json();
+  const text = await r.text();
+  return text ? JSON.parse(text) : null;
 }
 
 // ── Theme ──────────────────────────────────────────────
@@ -437,6 +438,7 @@ function flash(msg, ms = 3000) {
 const SHEETS = { actTemplate: "sheetTemplate", actDb: "sheetDb", actSettings: "sheetSettings" };
 
 function openSheet(id) {
+  $("#sheetSetup").hidden = true;
   Object.entries(SHEETS).forEach(([btn, sheet]) => {
     const on = sheet === id;
     $(`#${sheet}`).hidden = !on;
@@ -795,6 +797,11 @@ async function boot() {
   try { state.engine = await api("/api/engine"); } catch {}
   try { state.claude = await api("/api/claude"); } catch {}
   renderStatus();
+  // setup.js loads after this file; by now it is defined.
+  Setup.wire();
+  await Setup.maybeOpen();
+  // A local model may still be starting in the background.
+  setTimeout(async () => { try { state.engine = await api("/api/engine"); renderStatus(); } catch {} }, 15000);
 }
 
 boot();

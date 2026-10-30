@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "default": "gemma-4-12b-q8",
+  "note": "Add a model by adding an entry. Files are looked up in the Hugging Face repo by suffix at download time, so exact build names do not need to be hard-coded. Any GGUF model that the bundled llama.cpp supports works without code changes.",
+  "models": [
+    {
+      "id": "gemma-4-12b-q8",
+      "name": "Gemma 4 12B",
+      "variant": "Q8_0",
+      "summary": "接近原版品質",
+      "repo": "unsloth/gemma-4-12b-it-GGUF",
+      "file_suffix": "Q8_0.gguf",
+      "mmproj_suffix": "mmproj-BF16.gguf",
+      "approx_gb": 12.7,
+      "min_memory_gb": 24,
+      "context": 32768,
+      "license": "Apache-2.0",
+      "vision": true
+    },
+    {
+      "id": "gemma-4-12b-q4",
+      "name": "Gemma 4 12B",
+      "variant": "Q4_K_XL",
+      "summary": "省記憶體",
+      "repo": "unsloth/gemma-4-12b-it-GGUF",
+      "file_suffix": "UD-Q4_K_XL.gguf",
+      "mmproj_suffix": "mmproj-BF16.gguf",
+      "approx_gb": 7.4,
+      "min_memory_gb": 16,
+      "context": 32768,
+      "license": "Apache-2.0",
+      "vision": true
+    }
+  ]
+}
