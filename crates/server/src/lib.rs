@@ -13,6 +13,7 @@
 
 pub mod claude;
 pub mod engine;
+pub mod git;
 
 use axum::{
     extract::{Path as AxPath, Query as AxQuery, State},
@@ -378,7 +379,11 @@ async fn paper_dir(s: &Shared, name: &str) -> Result<PathBuf, axum::response::Re
 
 async fn get_paper(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
     match paper_dir(&s, &name).await {
-        Ok(dir) => Json(paper::load_paper(&dir)).into_response(),
+        Ok(dir) => Json(serde_json::json!({
+            "sections": paper::load_paper(&dir),
+            "macros": paper::paper_macros(&dir),
+        }))
+        .into_response(),
         Err(r) => r,
     }
 }
@@ -498,6 +503,52 @@ async fn decompose_text(State(s): State<Shared>, Json(b): Json<DecomposeBody>) -
     }
 }
 
+// ── Git ────────────────────────────────────────────────
+
+async fn workspace_root(s: &Shared) -> Option<PathBuf> {
+    let l = s.loaded.read().await;
+    if l.demo { None } else { l.workspace.clone() }
+}
+
+async fn git_status(State(s): State<Shared>) -> impl IntoResponse {
+    match workspace_root(&s).await {
+        Some(ws) => Json(git::status(&ws).await).into_response(),
+        None => Json(git::GitStatus::default()).into_response(),
+    }
+}
+
+async fn git_pull(State(s): State<Shared>) -> impl IntoResponse {
+    let Some(ws) = workspace_root(&s).await else { return Json(serde_json::json!({ "pulled": false })).into_response() };
+    match git::pull(&ws).await {
+        Ok(pulled) => {
+            if pulled {
+                *s.loaded.write().await = load(&s.paths);
+            }
+            Json(serde_json::json!({ "pulled": pulled })).into_response()
+        }
+        Err(e) => (StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct SyncBody {
+    message: Option<String>,
+}
+
+async fn git_sync(State(s): State<Shared>, body: Option<Json<SyncBody>>) -> impl IntoResponse {
+    let Some(ws) = workspace_root(&s).await else { return bad("示範工作區不做同步") };
+    let msg = body.and_then(|Json(b)| b.message);
+    match git::sync(&ws, msg).await {
+        Ok(r) => {
+            if r.pulled {
+                *s.loaded.write().await = load(&s.paths);
+            }
+            Json(r).into_response()
+        }
+        Err(e) => (StatusCode::CONFLICT, e).into_response(),
+    }
+}
+
 pub fn router(paths: Paths) -> Router {
     let cfg = read_config();
     let engine = Engine::new(EngineConfig::resolve(cfg.engine));
@@ -509,6 +560,9 @@ pub fn router(paths: Paths) -> Router {
         paths: paths.clone(),
     });
     Router::new()
+        .route("/api/git/status", get(git_status))
+        .route("/api/git/pull", post(git_pull))
+        .route("/api/git/sync", post(git_sync))
         .route("/api/papers/{name}", get(get_paper))
         .route("/api/papers/{name}/sections/{file}", put(put_section))
         .route("/api/tables/{name}", get(get_table).put(put_table))

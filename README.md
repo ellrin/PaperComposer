@@ -48,6 +48,21 @@ your-private-repo/
 
 設定檔在所有 repo 之外，路徑不會被 commit。欄位說明見 [`workspace-template/profile/README.md`](workspace-template/profile/README.md)。
 
+## Git 同步
+
+工作區是 Git repository 時（建議是你的私有 repo）：
+
+- **開啟 App**：自動 pull。只做 fast-forward；兩邊都有新 commit 時會提示你按同步。
+- **Ctrl+S**（或點狀態列的同步狀態）：commit 所有修改並 push。commit 訊息依修改的檔案自動產生，例如 `Update my-paper (method, result); profile (phrases)`。
+- **另一台裝置先推了**：自動把你的修改接在遠端之後再 push；若兩邊改到同一句，**中止並還原**，你的修改仍保留在本機，不會自動合併。
+- **commit 前檢查金鑰**：新增的內容看起來像 API key 或 token 時，拒絕 commit。
+
+使用系統安裝的 `git`，登入交給你電腦上的 Git 憑證管理（Windows 為 Git Credential Manager），App 不保存 Git 密碼。作者名稱沿用你的 `git config user.name` 與 `user.email`。
+
+## 公式
+
+紙張上的數學式用內建的 KaTeX 顯示（離線可用），支援 `$…$`、`\[…\]`、`equation`／`align` 等環境、自動編號與 `\eqref`，並會讀取論文 `main.tex` 與 `macros*.tex` 裡的 `\newcommand`、`\DeclareMathOperator`。這是編輯時的預覽，投稿用的 PDF 仍由 LaTeX 搭配期刊 cls 產生。
+
 ## 連接模型
 
 段落生成使用任何 OpenAI 相容的端點，例如在本機用 llama.cpp、Ollama 或 LM Studio 跑 Gemma 4 12B：
@@ -91,6 +106,9 @@ scripts/            Git hooks
 | POST | `/api/decompose` `{ text, section }` | 把句子或段落拆成句型與片語建議 |
 | GET | `/api/claude` | Claude 連線狀態 |
 | POST | `/api/settings/claude` `{ key, model }` | 存入或移除 API key、選擇模型 |
+| GET | `/api/git/status` | 分支、遠端、未同步的檔案、領先或落後的 commit 數 |
+| POST | `/api/git/pull` | 從遠端更新（只做 fast-forward） |
+| POST | `/api/git/sync` `{ message? }` | commit 並 push |
 
 ## 防止洩漏個人資料
 

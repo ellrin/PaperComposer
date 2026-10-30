@@ -89,13 +89,147 @@ pub fn render_section(s: &Section) -> String {
             continue;
         }
         out.push('\n');
-        let keep = p.contains("\\begin") || p.contains('%') || p.starts_with('\\');
+        // A real comment is an unescaped %; "12.4\%" is ordinary prose.
+        let has_comment = p.lines().any(|l| strip_comment(l).len() != l.len());
+        let keep = p.contains("\\begin") || has_comment || p.starts_with('\\');
         if keep {
             out.push_str(p);
         } else {
             out.push_str(&sentences(p).join("\n"));
         }
         out.push('\n');
+    }
+    out
+}
+
+/// `\newcommand`, `\renewcommand`, `\DeclareMathOperator` and simple `\def`
+/// from LaTeX source, as name -> body, for the math previewer. Argument
+/// counts are dropped: `#1` in the body works the same way in KaTeX.
+pub fn extract_macros(src: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let src: String = src.lines().map(|l| strip_comment(l)).collect::<Vec<_>>().join("\n");
+    let bytes: Vec<char> = src.chars().collect();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != '\\' {
+            i += 1;
+            continue;
+        }
+        let rest: String = bytes[i..bytes.len().min(i + 24)].iter().collect();
+        let (kind, skip) = ["\\newcommand", "\\renewcommand", "\\providecommand", "\\DeclareMathOperator", "\\def"]
+            .iter()
+            .find(|k| rest.starts_with(**k))
+            .map(|k| (*k, k.chars().count()))
+            .unwrap_or(("", 0));
+        if skip == 0 {
+            i += 1;
+            continue;
+        }
+        let mut j = i + skip;
+        let starred = bytes.get(j) == Some(&'*');
+        if starred {
+            j += 1;
+        }
+        // Name: {\name} or \name
+        let name;
+        while bytes.get(j).is_some_and(|c| c.is_whitespace()) {
+            j += 1;
+        }
+        if bytes.get(j) == Some(&'{') {
+            let (n, k) = group(&bytes, j);
+            name = n.trim().to_string();
+            j = k;
+        } else if bytes.get(j) == Some(&'\\') {
+            let start = j;
+            j += 1;
+            while bytes.get(j).is_some_and(|c| c.is_alphabetic()) {
+                j += 1;
+            }
+            name = bytes[start..j].iter().collect();
+        } else {
+            i += 1;
+            continue;
+        }
+        // Skip [n] and [default] (newcommand) or #1#2 (def).
+        loop {
+            while bytes.get(j).is_some_and(|c| c.is_whitespace()) {
+                j += 1;
+            }
+            match bytes.get(j) {
+                Some('[') => {
+                    while j < bytes.len() && bytes[j] != ']' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                Some('#') if kind == "\\def" => j += 2,
+                _ => break,
+            }
+        }
+        if bytes.get(j) == Some(&'{') && name.starts_with('\\') {
+            let (body, k) = group(&bytes, j);
+            // The starred form puts limits under the operator in display math.
+            let body = match (kind, starred) {
+                ("\\DeclareMathOperator", true) => format!("\\operatorname*{{{body}}}"),
+                ("\\DeclareMathOperator", false) => format!("\\operatorname{{{body}}}"),
+                _ => body,
+            };
+            out.insert(name, body);
+            i = k;
+        } else {
+            i = j.max(i + 1);
+        }
+    }
+    out
+}
+
+fn strip_comment(line: &str) -> &str {
+    let b = line.as_bytes();
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'%' && (i == 0 || b[i - 1] != b'\\') {
+            return &line[..i];
+        }
+    }
+    line
+}
+
+/// Content of a balanced `{...}` starting at `open`, and the index after it.
+fn group(chars: &[char], open: usize) -> (String, usize) {
+    let mut depth = 0;
+    let mut j = open;
+    while j < chars.len() {
+        match chars[j] {
+            '\\' => j += 1, // skip escaped char
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (chars[open + 1..j].iter().collect(), j + 1);
+                }
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    (chars[open + 1..].iter().collect(), chars.len())
+}
+
+/// Macros for a paper: main.tex preamble plus any macros*.tex beside it.
+pub fn paper_macros(paper: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut files = vec![paper.join("main.tex")];
+    if let Ok(dir) = std::fs::read_dir(paper) {
+        for e in dir.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if n.starts_with("macros") && n.ends_with(".tex") {
+                files.push(e.path());
+            }
+        }
+    }
+    for f in files {
+        if let Ok(src) = std::fs::read_to_string(f) {
+            out.extend(extract_macros(&src));
+        }
     }
     out
 }
@@ -123,15 +257,32 @@ mod tests {
 
     #[test]
     fn round_trips_a_section_one_sentence_per_line() {
-        let text = "\\section{Result}\n\nCompared with A, B wins. It is fast.\n\n\\begin{equation}\nx = 1. y = 2.\n\\end{equation}\n";
+        let text = "\\section{Result}\n\nCompared with A, B wins by 12.4\\%. It is fast.\n\n\\begin{equation}\nx = 1. y = 2.\n\\end{equation}\n";
         let s = parse_section("result.tex", text);
         assert_eq!(s.title, "Result");
         assert_eq!(s.paragraphs.len(), 2);
         let out = render_section(&s);
-        assert!(out.contains("Compared with A, B wins.\nIt is fast.\n"));
+        assert!(out.contains("Compared with A, B wins by 12.4\\%.\nIt is fast.\n"), "{out}");
         assert!(out.contains("x = 1. y = 2."), "environments kept verbatim");
         // Saving again changes nothing.
         assert_eq!(render_section(&parse_section("result.tex", &out)), out);
+    }
+
+    #[test]
+    fn extracts_macros() {
+        let src = r"\newcommand{\R}{\mathbb{R}} % reals
+\newcommand\norm[1]{\left\lVert #1 \right\rVert}
+\renewcommand*{\vec}[1]{\mathbf{#1}}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\def\eps{\varepsilon}
+% \newcommand{\hidden}{x}";
+        let m = extract_macros(src);
+        assert_eq!(m["\\R"], "\\mathbb{R}");
+        assert_eq!(m["\\norm"], "\\left\\lVert #1 \\right\\rVert");
+        assert_eq!(m["\\vec"], "\\mathbf{#1}");
+        assert_eq!(m["\\argmax"], "\\operatorname*{arg\\,max}");
+        assert_eq!(m["\\eps"], "\\varepsilon");
+        assert!(!m.contains_key("\\hidden"));
     }
 
     #[test]

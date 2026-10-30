@@ -66,8 +66,9 @@ const rank = (s) => ({ info: 1, warning: 2, error: 3 }[s] ?? 0);
 
 async function openPaper(name) {
   try {
-    const secs = await api(`/api/papers/${encodeURIComponent(name)}`);
-    state.paper = { name, sections: secs };
+    const res = await api(`/api/papers/${encodeURIComponent(name)}`);
+    state.paper = { name, sections: res.sections };
+    PCTex.setMacros(res.macros ?? {});
     state.cur = { s: 0, p: 0 };
     store.set("pc.paper", name);
   } catch (e) {
@@ -98,7 +99,10 @@ async function saveSection(i) {
   await checkSection(i);
 }
 
-function render() { renderNav(); renderPaper(); renderSide(); renderStatus(); }
+function render() {
+  PCTex.numberEquations(sections().flatMap((s) => s.paragraphs));
+  renderNav(); renderPaper(); renderSide(); renderStatus();
+}
 
 function renderNav() {
   $("#navTitle").textContent = state.paper?.name ?? "";
@@ -123,7 +127,12 @@ function renderNav() {
       const b = el("button");
       b.setAttribute("aria-current", String(si === state.cur.s && pi === state.cur.p));
       const rep = state.reports[si]?.[pi];
-      b.append(el("span", `status ${rep ? rep.status ?? "" : ""}`), el("span", "i", pad(pi + 1)), el("span", "t", text.split("\n")[0]));
+      // Label: rendered first line; display equations show their number.
+      const t = el("span", "t");
+      const eq = text.match(/\\label\{([^}]*)\}/);
+      if (/^\\begin\{(equation|align|gather|multline)/.test(text.trim())) t.textContent = `式 ${eq && PCTex.labels?.[eq[1]] ? `(${PCTex.labels[eq[1]]})` : ""}`;
+      else t.append(PCTex.render(text.split("\n")[0]));
+      b.append(el("span", `status ${rep ? rep.status ?? "" : ""}`), el("span", "i", pad(pi + 1)), t);
       b.onclick = () => { select(si, pi); paraEl(si, pi)?.scrollIntoView({ block: "center", behavior: "smooth" }); };
       const item = el("li");
       item.append(b);
@@ -141,22 +150,31 @@ function renderPaper() {
   paper.innerHTML = "";
   if (!state.paper) return;
   sections().forEach((sec, si) => {
-    const h = el("h2", "", sec.title);
+    const h = el("h2");
+    h.append(PCTex.render(sec.title));
     h.id = `sec-${si}`;
     paper.append(h);
     sec.paragraphs.forEach((text, pi) => {
-      const p = el("p", "para");
+      const block = /\\begin\{(equation|align|gather|multline|eqnarray|displaymath)/.test(text);
+      const p = el(block ? "div" : "p", block ? "para display" : "para");
       p.dataset.s = si;
       p.dataset.p = pi;
-      const rep = state.reports[si]?.[pi];
-      const flagged = new Map();
-      rep?.findings.forEach((f) => {
-        if (f.sentence == null) return;
-        if (rank(f.severity) > rank(flagged.get(f.sentence))) flagged.set(f.sentence, f.severity);
-      });
-      (rep?.sentence_text ?? [text.replace(/\s+/g, " ")]).forEach((s, i) => {
-        p.append(el("span", "s" + (flagged.has(i) ? ` flag ${flagged.get(i)}` : ""), s + " "));
-      });
+      if (block) {
+        // Mixed prose + display math: render as a whole, without sentence marks.
+        p.append(PCTex.render(text));
+      } else {
+        const rep = state.reports[si]?.[pi];
+        const flagged = new Map();
+        rep?.findings.forEach((f) => {
+          if (f.sentence == null) return;
+          if (rank(f.severity) > rank(flagged.get(f.sentence))) flagged.set(f.sentence, f.severity);
+        });
+        (rep?.sentence_text ?? [text.replace(/\s+/g, " ")]).forEach((s, i) => {
+          const span = el("span", "s" + (flagged.has(i) ? ` flag ${flagged.get(i)}` : ""));
+          span.append(PCTex.render(s), " ");
+          p.append(span);
+        });
+      }
       p.onclick = () => select(si, pi);
       p.ondblclick = () => edit(p, si, pi);
       paper.append(p);
@@ -198,6 +216,7 @@ function edit(p, si, pi) {
     if (v) list[pi] = v; else list.splice(pi, 1);
     try { await saveSection(si); } catch (e) { flash(`儲存失敗：${e.message}`); }
     render();
+    refreshGit();
   };
   p.replaceChildren(ta);
   p.ondblclick = null;
@@ -287,7 +306,8 @@ function renderResult() {
     wrap.append(meta);
     const d = el("div", "draft");
     r.draft.sentences.forEach((s) => {
-      const span = el("span", "sent", s.text);
+      const span = el("span", "sent");
+      span.append(PCTex.render(s.text));
       const ref = r.references.find((h) => h.phrase.id === s.phrase_id);
       if (ref) span.title = ref.phrase.template;
       d.append(span, el("sup", s.phrase_id ? "" : "free", s.phrase_id ?? "自由"), " ");
@@ -337,6 +357,7 @@ async function placeDraft(text, how) {
   }
   try { await saveSection(state.cur.s); } catch (e) { flash(`儲存失敗：${e.message}`); }
   render();
+  refreshGit();
 }
 
 function renderStatus() {
@@ -352,15 +373,64 @@ function renderStatus() {
   const cl = el("span"); const cdot = el("span", "dot");
   cdot.style.background = state.claude?.configured ? "var(--ok)" : "var(--faint)";
   cl.append(cdot, "Claude"); bar.append(cl);
+  bar.append(gitIndicator());
+}
+
+// ── Git sync ───────────────────────────────────────────
+function gitIndicator() {
+  const g = state.git;
+  const b = el("button", "sync");
+  const dot = el("span", "dot");
+  let label, color = "var(--faint)";
+  if (state.syncing) { label = "同步中"; color = "var(--accent)"; }
+  else if (!g?.repo) { label = state.workspace?.demo ? "示範（不同步）" : "無 Git"; }
+  else if (g.changed.length) { label = `${g.changed.length} 項未同步`; color = "var(--warn)"; }
+  else if (g.ahead) { label = `${g.ahead} 個 commit 未推送`; color = "var(--warn)"; }
+  else if (!g.remote) { label = "已 commit（無遠端）"; color = "var(--ok)"; }
+  else { label = state.lastSync ? `已同步 ${state.lastSync}` : "已同步"; color = "var(--ok)"; }
+  dot.style.background = color;
+  b.append(dot, label);
+  b.title = g?.repo ? `${g.branch ?? ""} → ${g.remote ?? "沒有遠端"}\nCtrl+S 同步` : "工作區不是 Git repository";
+  b.disabled = !g?.repo || state.syncing;
+  b.onclick = syncNow;
+  return b;
+}
+
+async function refreshGit() {
+  try { state.git = await api("/api/git/status"); } catch { state.git = null; }
+  renderStatus();
+}
+
+async function syncNow() {
+  if (!state.git?.repo || state.syncing) return;
+  // Finish any paragraph being edited first, so it is part of the commit.
+  const active = document.activeElement;
+  if (active?.tagName === "TEXTAREA" && active.closest(".para")) { active.blur(); await new Promise((r) => setTimeout(r, 200)); }
+  if (state.db.dirty.size) await saveDb();
+  state.syncing = true;
+  renderStatus();
+  try {
+    const r = await api("/api/git/sync", {});
+    state.git = r.status;
+    state.lastSync = new Date().toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false });
+    if (r.pulled && state.paper) await openPaper(state.paper.name);
+    flash(r.committed ? `已同步：${r.committed}` : "沒有新的修改");
+  } catch (e) {
+    flash(e.message, 8000);
+    await refreshGit();
+  } finally {
+    state.syncing = false;
+    renderStatus();
+  }
 }
 
 let flashTimer;
-function flash(msg) {
+function flash(msg, ms = 3000) {
   let t = $("#flash");
-  if (!t) { t = el("div", "tip"); t.id = "flash"; t.style.bottom = "24px"; t.style.left = "50%"; t.style.transform = "translateX(-50%)"; document.body.append(t); }
+  if (!t) { t = el("div", "tip flash"); t.id = "flash"; document.body.append(t); }
   t.textContent = msg;
   clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => t.remove(), 3000);
+  flashTimer = setTimeout(() => t.remove(), ms);
 }
 
 // ── Sheets ─────────────────────────────────────────────
@@ -556,6 +626,7 @@ async function saveDb() {
   showTable(state.db.name);
   const n = Object.values(state.db.issues).flat().length;
   flash(n ? `已儲存，有 ${n} 筆格式問題` : "已儲存");
+  refreshGit();
 }
 
 // decompose
@@ -650,7 +721,8 @@ function wire() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { closeTip(); $("#fileMenu").hidden = true; }
-    if ((e.ctrlKey || e.metaKey) && e.key === "s" && !$("#sheetDb").hidden) { e.preventDefault(); saveDb(); }
+    // Ctrl+S: save database edits, then commit and push the workspace.
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); syncNow(); }
   });
 
   $("#actFile").onclick = toggleFileMenu;
@@ -692,6 +764,12 @@ async function boot() {
   applyTheme();
   wire();
   try { state.workspace = await api("/api/workspace"); } catch {}
+  // Bring in work from other devices before showing anything.
+  try {
+    const r = await api("/api/git/pull", {});
+    if (r?.pulled) flash("已從遠端更新");
+  } catch (e) { flash(e.message, 8000); }
+  await refreshGit();
   try {
     state.profile = await api("/api/profile");
     state.ruleText = await api("/api/profile/rules");

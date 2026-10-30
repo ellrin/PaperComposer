@@ -1,5 +1,9 @@
 \documentclass{article}
-\usepackage{amsmath}
+\usepackage{amsmath,amssymb}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\DeclareMathOperator*{\argmax}{arg\,max}
 
 \title{Example paper}
 \author{Your Name}
@@ -8,6 +12,7 @@
 \maketitle
 
 \input{sections/introduction}
+\input{sections/method}
 \input{sections/result}
 
 \bibliographystyle{plain}

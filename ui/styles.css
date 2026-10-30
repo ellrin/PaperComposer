@@ -411,3 +411,20 @@ select, input[type="search"] {
 .list li { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
 .db-side .row select { flex: 1; min-width: 0; }
 .db-side .row .primary { flex: none; white-space: nowrap; }
+
+/* math and references in the paper preview */
+.paper .math.display, .draft .math.display { display: block; margin: 12px 0; overflow-x: auto; overflow-y: hidden; }
+.paper .katex { font-size: 1.05em; }
+.para.display { cursor: text; }
+.paper .cite, .paper .ref { color: #2f5d9e; }
+.draft .cite, .draft .ref { color: var(--accent); }
+.ref.missing { color: var(--err) !important; }
+.fn { color: #2f5d9e; cursor: help; }
+
+/* sync indicator in the status bar; flash messages */
+.statusbar .sync {
+  background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer;
+}
+.statusbar .sync:hover:not(:disabled) { color: var(--text); }
+.statusbar .sync:disabled { cursor: default; }
+.tip.flash { bottom: 24px; left: 50%; transform: translateX(-50%); max-width: 520px; text-align: center; }

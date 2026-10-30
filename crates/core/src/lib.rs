@@ -10,6 +10,7 @@ pub mod compose;
 pub mod decompose;
 pub mod paper;
 pub mod table;
+pub mod vcs;
 pub mod profile;
 pub mod retrieve;
 pub mod text;
