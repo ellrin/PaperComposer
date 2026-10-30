@@ -6,6 +6,7 @@
 //! repository. Nothing in this crate writes to it except through explicit calls.
 
 pub mod check;
+pub mod compose;
 pub mod profile;
 pub mod retrieve;
 pub mod text;

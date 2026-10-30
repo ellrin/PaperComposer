@@ -183,48 +183,166 @@ function renderFindings() {
   });
 }
 
-let searchTimer;
-async function renderHits() {
-  const params = new URLSearchParams({ section: state.section, limit: "8" });
-  if ($("#q").value.trim()) params.set("text", $("#q").value.trim());
-  if ($("#fn").value) params.set("function", $("#fn").value);
-  if ($("#pos").value) params.set("position", $("#pos").value);
-  const ul = $("#hits");
-  let hits = [];
-  try { hits = await api(`/api/phrases?${params}`); } catch { ul.innerHTML = `<li class="empty">—</li>`; return; }
-  ul.innerHTML = "";
-  if (!hits.length) { ul.innerHTML = `<li class="empty">沒有符合的句型</li>`; return; }
-  hits.forEach(({ phrase }) => {
-    const li = document.createElement("li");
-    const b = document.createElement("button");
-    b.className = "hit";
-    b.innerHTML = `<div class="meta"><span>${phrase.id}</span><span>${phrase.function}</span><span>${phrase.position}</span></div><div class="tpl"></div>`;
-    // Slots in accent, everything else as plain text.
-    phrase.template.split(/(\{[^}]*\})/).forEach((part) => {
-      const n = part.startsWith("{") ? document.createElement("i") : document.createTextNode(part);
-      if (n.nodeType === 1) n.textContent = part;
-      b.querySelector(".tpl").append(n);
-    });
-    b.onclick = async () => {
-      try { await navigator.clipboard.writeText(phrase.template); } catch {}
-      b.querySelector(".meta").lastElementChild.textContent = "已複製";
-    };
-    li.append(b);
-    ul.append(li);
+// ── Compose (one-shot Q&A) ─────────────────────────────
+const seg = (id) => $(`#${id} [aria-pressed="true"]`)?.dataset.v;
+
+function slotted(template) {
+  // Template text with {slots} highlighted; built as nodes, never as HTML.
+  const frag = document.createDocumentFragment();
+  template.split(/(\{[^}]*\})/).forEach((part) => {
+    if (!part) return;
+    if (part.startsWith("{")) { const i = document.createElement("i"); i.textContent = part; frag.append(i); }
+    else frag.append(part);
   });
+  return frag;
+}
+
+async function compose() {
+  const points = $("#points").value.trim();
+  if (!points) { $("#points").focus(); return; }
+  const list = paras();
+  const ctx = seg("cContext") === "on";
+  const body = {
+    points,
+    section: $("#cSection").value,
+    function: $("#cFunction").value || null,
+    min_words: Number($("#cMin").value) || 120,
+    max_words: Number($("#cMax").value) || 180,
+    language: seg("cLang"),
+    before: ctx ? list[state.current] ?? null : null,
+    after: ctx ? list[state.current + 1] ?? null : null,
+  };
+  const btn = $("#generate");
+  btn.disabled = true;
+  btn.firstChild.textContent = "生成中";
+  try {
+    state.composed = await api("/api/compose", body);
+  } catch (e) {
+    state.composed = { error: String(e.message ?? e), references: [] };
+  } finally {
+    btn.disabled = false;
+    btn.firstChild.textContent = "生成";
+  }
+  renderResult();
+}
+
+function renderResult() {
+  const box = $("#result");
+  box.innerHTML = "";
+  const r = state.composed;
+  if (!r) return;
+  const wrap = document.createElement("div");
+  wrap.className = "result";
+
+  if (r.draft) {
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.innerHTML = `<span><b>${r.check.covered}/${r.check.total}</b> 句用句型庫</span><span>${r.check.words} 字</span>`;
+    wrap.append(meta);
+
+    const d = document.createElement("div");
+    d.className = "draft";
+    r.draft.sentences.forEach((s) => {
+      const span = document.createElement("span");
+      span.className = "sent";
+      span.textContent = s.text;
+      const sup = document.createElement("sup");
+      sup.textContent = s.phrase_id ?? "自由";
+      if (!s.phrase_id) sup.className = "free";
+      const ref = r.references.find((h) => h.phrase.id === s.phrase_id);
+      if (ref) span.title = ref.phrase.template;
+      d.append(span, sup, " ");
+    });
+    wrap.append(d);
+
+    if (r.check.problems.length) {
+      const ul = document.createElement("ul");
+      ul.className = "problems";
+      r.check.problems.forEach((p) => { const li = document.createElement("li"); li.textContent = p; ul.append(li); });
+      wrap.append(ul);
+    }
+
+    const text = r.draft.sentences.map((s) => s.text).join("\n");
+    const acts = document.createElement("div");
+    acts.className = "actions";
+    const act = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.onclick = fn; acts.append(b); };
+    act("插入", () => placeDraft(text, "insert"));
+    act("取代", () => placeDraft(text, "replace"));
+    act("重來", compose);
+    act("複製", () => navigator.clipboard?.writeText(text.replace(/\n/g, " ")));
+    wrap.append(acts);
+  } else {
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = r.error === "no engine" ? "未連接模型：以下是會交給模型的參考句型。" : `生成失敗：${r.error}`;
+    wrap.append(note);
+    if (r.prompt) {
+      const acts = document.createElement("div");
+      acts.className = "actions";
+      const b = document.createElement("button");
+      b.textContent = "複製提示詞";
+      b.title = "貼到任何對話模型使用";
+      b.onclick = () => navigator.clipboard?.writeText(`${r.prompt.system}\n\n${r.prompt.user}`);
+      acts.append(b);
+      wrap.append(acts);
+    }
+  }
+
+  if (r.references?.length) {
+    const ul = document.createElement("ul");
+    ul.className = "refs";
+    r.references.forEach(({ phrase }) => {
+      const li = document.createElement("li");
+      const id = document.createElement("span");
+      id.textContent = phrase.id;
+      const t = document.createElement("span");
+      t.append(slotted(phrase.template));
+      li.append(id, t);
+      ul.append(li);
+    });
+    if (r.draft) {
+      const det = document.createElement("details");
+      const sum = document.createElement("summary");
+      sum.className = "note";
+      sum.textContent = `參考句型 ${r.references.length}`;
+      det.append(sum, ul);
+      wrap.append(det);
+    } else {
+      wrap.append(ul);
+    }
+  }
+  box.append(wrap);
+}
+
+async function placeDraft(text, how) {
+  const list = paras().slice();
+  if (how === "replace" && list.length) list[state.current] = text;
+  else { list.splice(list.length ? state.current + 1 : 0, 0, text); state.current = list.length ? state.current + (list.length > 1 ? 1 : 0) : 0; }
+  state.doc[state.section] = list;
+  store.set("pc.doc", state.doc);
+  await refresh();
+}
+
+function syncCompose() {
+  const sel = $("#cSection");
+  if (!sel.options.length) SECTIONS.forEach((s) => sel.append(new Option(s, s)));
+  sel.value = state.section;
 }
 
 function renderStatus() {
   const words = state.reports.reduce((n, r) => n + r.words, 0);
   const p = state.profile;
+  const e = state.engine;
+  const dot = e?.connected ? "var(--ok)" : "var(--faint)";
   $("#statusbar").innerHTML =
     `<span class="accent">${String(SECTIONS.indexOf(state.section) + 1).padStart(2, "0")} / ${state.section}</span>` +
     `<span>${paras().length} 段 · ${words} 字</span>` +
-    `<span><span class="dot"></span>未連接模型</span>` +
+    `<span><span class="dot" style="background:${dot}"></span><span id="engineName"></span></span>` +
     (p ? `<span>${p.phrases} 句型 · ${p.rules} 規則</span>` : "");
+  $("#engineName").textContent = e?.name ?? "未連接模型";
 }
 
-function renderSide() { renderFindings(); renderHits(); }
+function renderSide() { renderFindings(); syncCompose(); }
 
 async function refresh() {
   const text = paras().join("\n\n");
@@ -263,8 +381,8 @@ async function loadProfile() {
       i.title = p.issues.map((x) => `${x.file}:${x.line} ${x.column ?? ""} ${x.message}`).join("\n");
       chips.append(i);
     }
-    const fn = $("#fn");
-    p.functions.forEach((f) => fn.append(new Option(f, f)));
+    const fn = $("#cFunction");
+    p.functions.forEach((f) => fn.append(new Option(f.replace(/_/g, " "), f)));
   } catch {
     chips.innerHTML = `<span class="chip warn">伺服器未啟動</span>`;
   }
@@ -317,12 +435,20 @@ function wire() {
   };
   $("#dimPaper").onclick = () => { store.set("pc.dim", !store.get("pc.dim", false)); applyTheme(); };
 
-  $("#q").oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(renderHits, 150); };
-  $("#fn").onchange = renderHits;
-  $("#pos").onchange = renderHits;
-  $("#generate").title = "需要連接模型引擎";
+  document.querySelectorAll(".seg").forEach((s) => {
+    s.querySelectorAll("button").forEach((b) => {
+      b.onclick = () => s.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    });
+  });
+  $("#generate").onclick = compose;
+  $("#points").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) compose(); };
+}
+
+async function loadEngine() {
+  try { state.engine = await api("/api/engine"); } catch { state.engine = null; }
+  renderStatus();
 }
 
 applyTheme();
 wire();
-loadProfile().then(refresh);
+loadProfile().then(refresh).then(loadEngine);

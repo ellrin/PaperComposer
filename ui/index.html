@@ -19,7 +19,6 @@
   <aside class="left" aria-label="段落大綱">
     <h2 class="panel-title"><span class="step" id="sectionStep"></span><span id="sectionName"></span></h2>
     <ol class="outline" id="outline"></ol>
-    <button class="primary" id="generate" disabled>生成段落</button>
   </aside>
 
   <main class="page-area">
@@ -28,25 +27,23 @@
   </main>
 
   <aside class="right" aria-label="寫作助手">
-    <section class="block" data-open="true" id="blockPhrases">
+    <section class="block" data-open="true" id="blockCompose">
       <div class="block-head">
-        <span class="n">01</span><h3>句型</h3>
-        <button class="help" data-tip="依目前章節列出你句型庫裡的寫法。輸入重點字詞可排序；點一下複製句型。">?</button>
+        <span class="n">01</span><h3>寫作</h3>
+        <button class="help" data-tip="條列重點，一行一點；以 ! 開頭表示強調。模型只能用你句型庫裡的寫法組成段落。">?</button>
         <button class="toggle" aria-label="展開或收合">−</button>
       </div>
       <div class="block-body">
-        <div class="field"><input type="search" id="q" placeholder="重點字詞"></div>
-        <div class="row">
-          <select id="fn" aria-label="功能"><option value="">全部功能</option></select>
-          <select id="pos" aria-label="位置">
-            <option value="">全部位置</option>
-            <option value="opening">開頭</option>
-            <option value="body">中段</option>
-            <option value="closing">結尾</option>
-            <option value="transition">轉折</option>
-          </select>
+        <div class="cond">
+          <label><span>章節</span><select id="cSection"></select></label>
+          <label><span>功能</span><select id="cFunction"><option value="">自動</option></select></label>
+          <label><span>字數</span><span class="range"><input id="cMin" type="number" min="20" step="10" value="120"><i>–</i><input id="cMax" type="number" min="20" step="10" value="180"></span></label>
+          <label><span>語言</span><span class="seg" id="cLang"><button data-v="en" aria-pressed="true">EN</button><button data-v="zh" aria-pressed="false">中</button></span></label>
+          <label class="wide"><span>前後段</span><span class="seg" id="cContext"><button data-v="on" aria-pressed="true">連貫</button><button data-v="off" aria-pressed="false">獨立</button></span></label>
         </div>
-        <ul class="hits" id="hits"></ul>
+        <textarea id="points" rows="5" placeholder="- ! 主要發現&#10;- 次要重點"></textarea>
+        <button class="primary" id="generate">生成<kbd>Ctrl ↵</kbd></button>
+        <div id="result"></div>
       </div>
     </section>
 

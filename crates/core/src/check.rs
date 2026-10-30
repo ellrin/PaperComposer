@@ -149,7 +149,7 @@ fn parse_range(s: &str) -> Option<(usize, usize)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
-fn contains_word(haystack: &str, term: &str) -> bool {
+pub(crate) fn contains_word(haystack: &str, term: &str) -> bool {
     haystack.match_indices(term).any(|(i, _)| {
         let before = haystack[..i].chars().next_back();
         let after = haystack[i + term.len()..].chars().next();
