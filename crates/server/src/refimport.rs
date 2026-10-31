@@ -195,6 +195,207 @@ pub fn pdf_abstract(head: &str) -> String {
     rest[..end.min(rest.len())].split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+// ── search: Claude plans and ranks, OpenAlex supplies the papers ──
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Candidate {
+    pub doi: String,
+    pub title: String,
+    pub authors: String,
+    pub year: Option<u32>,
+    pub venue: String,
+    pub venue_type: String,
+    pub cited_by: u64,
+    pub kind: String,
+    pub oa_url: Option<String>,
+    pub abstract_text: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Deserialize)]
+struct OaList {
+    #[serde(default)]
+    results: Vec<OaHit>,
+}
+#[derive(Deserialize)]
+struct OaHit {
+    #[serde(default)]
+    doi: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    publication_year: Option<u32>,
+    #[serde(default)]
+    cited_by_count: u64,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    primary_location: Option<OaLocation>,
+    #[serde(default)]
+    authorships: Vec<OaAuthorship>,
+    #[serde(default)]
+    open_access: Option<OaAccess>,
+    #[serde(default)]
+    abstract_inverted_index: Option<std::collections::HashMap<String, Vec<usize>>>,
+}
+#[derive(Deserialize)]
+struct OaAuthorship {
+    #[serde(default)]
+    author: Option<OaAuthor>,
+}
+#[derive(Deserialize)]
+struct OaAuthor {
+    #[serde(default)]
+    display_name: Option<String>,
+}
+#[derive(Deserialize)]
+struct OaAccess {
+    #[serde(default)]
+    oa_url: Option<String>,
+}
+
+fn unindex(idx: Option<std::collections::HashMap<String, Vec<usize>>>) -> String {
+    idx.map(|idx| {
+        let mut words: Vec<(usize, String)> = idx.into_iter().flat_map(|(w, pos)| pos.into_iter().map(move |p| (p, w.clone()))).collect();
+        words.sort();
+        words.into_iter().map(|(_, w)| w).collect::<Vec<_>>().join(" ")
+    })
+    .unwrap_or_default()
+}
+
+/// How the tags the user picked steer the database query.
+pub struct Steer {
+    pub review_only: bool,
+    pub recent_years: Option<u32>,
+    pub most_cited: bool,
+}
+
+impl Steer {
+    pub fn from_tags(tags: &[String]) -> Steer {
+        let has = |t: &str| tags.iter().any(|x| x == t);
+        Steer {
+            review_only: has("review"),
+            recent_years: (has("new_algorithm") || has("new_application") || has("sota")).then_some(3),
+            most_cited: has("classical_algorithm") || has("traditional_application"),
+        }
+    }
+}
+
+/// One OpenAlex search. Preprint-only works (repository sources) are dropped.
+pub async fn openalex_search(query: &str, steer: &Steer, this_year: u32) -> Result<Vec<Candidate>, String> {
+    let mut filters = vec!["has_doi:true".to_string()];
+    if steer.review_only {
+        filters.push("type:review".into());
+    }
+    if let Some(y) = steer.recent_years {
+        filters.push(format!("from_publication_date:{}-01-01", this_year.saturating_sub(y)));
+    }
+    let mut url = reqwest::Url::parse(&format!("{}/works", base("PAPERCOMPOSER_OPENALEX_BASE", "https://api.openalex.org"))).map_err(|e| e.to_string())?;
+    url.query_pairs_mut()
+        .append_pair("search", query)
+        .append_pair("filter", &filters.join(","))
+        .append_pair("per-page", "12")
+        .append_pair("select", "doi,title,publication_year,cited_by_count,type,primary_location,authorships,open_access,abstract_inverted_index");
+    if steer.most_cited {
+        url.query_pairs_mut().append_pair("sort", "cited_by_count:desc");
+    }
+    let r = http().get(url).send().await.map_err(|e| format!("無法連線到 OpenAlex：{e}"))?;
+    if !r.status().is_success() {
+        return Err(format!("OpenAlex 回傳 {}", r.status()));
+    }
+    let list: OaList = r.json().await.map_err(|e| format!("OpenAlex 回覆無法讀取：{e}"))?;
+    Ok(list
+        .results
+        .into_iter()
+        .filter_map(|h| {
+            let doi = h.doi?.trim_start_matches("https://doi.org/").to_string();
+            let src = h.primary_location.and_then(|l| l.source);
+            let venue_type = src.as_ref().and_then(|s| s.kind.clone()).unwrap_or_default();
+            if venue_type == "repository" {
+                return None; // only on arXiv and the like
+            }
+            let names: Vec<String> = h.authorships.iter().filter_map(|a| a.author.as_ref()?.display_name.clone()).collect();
+            let authors = match names.len() {
+                0 => String::new(),
+                1 => names[0].clone(),
+                _ => format!("{} et al.", names[0].split_whitespace().last().unwrap_or(&names[0])),
+            };
+            Some(Candidate {
+                doi,
+                title: h.title.unwrap_or_default(),
+                authors,
+                year: h.publication_year,
+                venue: src.and_then(|s| s.display_name).unwrap_or_default(),
+                venue_type,
+                cited_by: h.cited_by_count,
+                kind: h.kind.unwrap_or_default(),
+                oa_url: h.open_access.and_then(|o| o.oa_url),
+                abstract_text: unindex(h.abstract_inverted_index),
+                reason: String::new(),
+            })
+        })
+        .collect())
+}
+
+pub fn queries_prompt(request: &str, steer_labels: &[String]) -> Prompt {
+    Prompt {
+        system: "You turn a researcher's request into searches for a scholarly database (OpenAlex full-text search). \
+Reply with JSON only: {\"queries\": [\"...\"]} with 2 to 4 short English keyword queries of 3 to 8 words each, \
+covering different phrasings of the topic. No boolean operators, no quotes."
+            .into(),
+        user: format!("Request:\n{request}\n\nWanted: {}\n", if steer_labels.is_empty() { "any".to_string() } else { steer_labels.join(", ") }),
+    }
+}
+
+pub fn parse_queries(reply: &str) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Q {
+        queries: Vec<String>,
+    }
+    let (Some(a), Some(b)) = (reply.find('{'), reply.rfind('}')) else { return Vec::new() };
+    serde_json::from_str::<Q>(&reply[a..=b]).map(|q| q.queries.into_iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).take(4).collect()).unwrap_or_default()
+}
+
+pub fn rank_prompt(request: &str, cands: &[Candidate]) -> Prompt {
+    let mut user = format!("Request:\n{request}\n\nCandidates:\n");
+    for (i, c) in cands.iter().enumerate() {
+        let abs: String = c.abstract_text.chars().take(320).collect();
+        user += &format!("[{i}] {} ({}; {}; cited {}; {})\n    {}\n", c.title, c.year.map(|y| y.to_string()).unwrap_or_default(), c.venue, c.cited_by, c.kind, abs);
+    }
+    Prompt {
+        system: "You pick the papers that best fit a researcher's request. Choose only from the numbered candidates; never add, rename or invent papers. \
+Reply with JSON only: {\"picks\": [{\"id\": 0, \"reason\": \"one sentence in Traditional Chinese (繁體中文) on why it fits\"}]}, best first, at most 8."
+            .into(),
+        user,
+    }
+}
+
+/// The ranked candidates; ids outside the list are ignored.
+pub fn apply_ranking(reply: &str, cands: &[Candidate]) -> Option<Vec<Candidate>> {
+    #[derive(Deserialize)]
+    struct Pick {
+        id: usize,
+        #[serde(default)]
+        reason: String,
+    }
+    #[derive(Deserialize)]
+    struct R {
+        picks: Vec<Pick>,
+    }
+    let (a, b) = (reply.find('{')?, reply.rfind('}')?);
+    let r: R = serde_json::from_str(&reply[a..=b]).ok()?;
+    let mut seen = std::collections::HashSet::new();
+    Some(
+        r.picks
+            .into_iter()
+            .filter(|p| p.id < cands.len() && seen.insert(p.id))
+            .take(8)
+            .map(|p| Candidate { reason: p.reason, ..cands[p.id].clone() })
+            .collect(),
+    )
+}
+
 /// `ronneberger2015unet`: first author's surname, year, first content word.
 pub fn make_key(e: &Entry, taken: &[String]) -> String {
     const SKIP: &[&str] = &["a", "an", "the", "on", "of", "for", "in", "to", "and", "with", "towards", "toward", "via"];
@@ -327,6 +528,18 @@ mod tests {
     fn abstract_from_pdf_text() {
         let head = "Title\nAuthors\nAbstract. There is large consent that deep networks\nneed many samples.\nKeywords: segmentation\n1 Introduction";
         assert_eq!(pdf_abstract(head), "There is large consent that deep networks need many samples.");
+    }
+
+    #[test]
+    fn ranking_only_uses_candidates() {
+        let c = |t: &str| Candidate { doi: format!("10.1/{t}"), title: t.into(), authors: String::new(), year: Some(2020), venue: String::new(), venue_type: String::new(), cited_by: 0, kind: String::new(), oa_url: None, abstract_text: String::new(), reason: String::new() };
+        let cands = vec![c("A"), c("B"), c("C")];
+        let out = apply_ranking("{\"picks\":[{\"id\":2,\"reason\":\"r2\"},{\"id\":9,\"reason\":\"made up\"},{\"id\":2,\"reason\":\"dup\"},{\"id\":0,\"reason\":\"r0\"}]}", &cands).unwrap();
+        assert_eq!(out.iter().map(|x| x.title.as_str()).collect::<Vec<_>>(), vec!["C", "A"]);
+        assert_eq!(out[0].reason, "r2");
+        assert_eq!(parse_queries("```json\n{\"queries\":[\"a b c\",\" \",\"d e f\"]}\n```"), vec!["a b c", "d e f"]);
+        let st = Steer::from_tags(&["review".into(), "classical_algorithm".into()]);
+        assert!(st.review_only && st.most_cited && st.recent_years.is_none());
     }
 
     #[test]

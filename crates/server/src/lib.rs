@@ -926,6 +926,106 @@ async fn propose_ref(State(s): State<Shared>, Json(b): Json<Propose>) -> impl In
 }
 
 #[derive(Deserialize)]
+struct SearchBody {
+    request: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    /// "subscription" or "api": search is a Claude feature.
+    engine: EngineChoice,
+}
+
+/// Find papers: Claude writes the queries, OpenAlex returns real works (all
+/// with DOIs, no preprint-only ones), Claude ranks them and says why.
+async fn search_refs(State(s): State<Shared>, Json(b): Json<SearchBody>) -> impl IntoResponse {
+    if b.engine == EngineChoice::Local || !engine_ready(&s, b.engine).await {
+        return bad("搜尋需要連接 Claude");
+    }
+    if b.request.trim().is_empty() {
+        return bad("寫下要找什麼");
+    }
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let profile = s.loaded.read().await.path.clone();
+    let tag_list = bib::read_tags(&profile.join("tags.csv"));
+    let labels: Vec<String> = b.tags.iter().map(|t| tag_list.iter().find(|x| &x.id == t).map(|x| format!("{} ({})", x.label, x.id)).unwrap_or(t.clone())).collect();
+    let steer = refimport::Steer::from_tags(&b.tags);
+
+    let queries = match writing_complete(&s, Some(b.engine), &refimport::queries_prompt(&b.request, &labels), None).await {
+        Ok(r) => refimport::parse_queries(&r),
+        Err(e) => return Json(serde_json::json!({ "error": e })).into_response(),
+    };
+    if queries.is_empty() {
+        return Json(serde_json::json!({ "error": "Claude 沒有產生搜尋關鍵字" })).into_response();
+    }
+    let this_year: u32 = {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        (1970 + secs / 31_556_952) as u32
+    };
+    let mut cands: Vec<refimport::Candidate> = Vec::new();
+    let mut last_err = None;
+    for q in &queries {
+        match refimport::openalex_search(q, &steer, this_year).await {
+            Ok(list) => {
+                for c in list {
+                    if !cands.iter().any(|x| x.doi.eq_ignore_ascii_case(&c.doi)) {
+                        cands.push(c);
+                    }
+                }
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    if cands.is_empty() {
+        return Json(serde_json::json!({ "queries": queries, "results": [], "error": last_err })).into_response();
+    }
+    // Venue-based steering after retrieval.
+    let wants_top: Vec<&str> = b.tags.iter().map(String::as_str).filter(|t| *t == "top_conference" || *t == "top_journal").collect();
+    if !wants_top.is_empty() {
+        let top: Vec<_> = cands.iter().filter(|c| refimport::venue_tags(&profile, &c.venue).iter().any(|t| wants_top.contains(&t.as_str()))).cloned().collect();
+        if !top.is_empty() {
+            cands = top;
+        }
+    }
+    cands.truncate(30);
+    let ranked = match writing_complete(&s, Some(b.engine), &refimport::rank_prompt(&b.request, &cands), None).await {
+        Ok(r) => refimport::apply_ranking(&r, &cands).unwrap_or_else(|| cands.iter().take(8).cloned().collect()),
+        Err(_) => cands.iter().take(8).cloned().collect(),
+    };
+    let (entries, _) = load_library(&ws);
+    let results: Vec<serde_json::Value> = ranked
+        .into_iter()
+        .map(|c| {
+            let have = entries.iter().find(|e| e.get("doi").is_some_and(|d| d.eq_ignore_ascii_case(&c.doi))).map(|e| e.key.clone());
+            let mut v = serde_json::to_value(&c).unwrap_or_default();
+            v["in_library"] = serde_json::json!(have);
+            v
+        })
+        .collect();
+    Json(serde_json::json!({ "queries": queries, "results": results })).into_response()
+}
+
+#[derive(Deserialize)]
+struct OpenDoi {
+    #[serde(default)]
+    doi: Option<String>,
+    /// An open-access PDF link returned by the search.
+    #[serde(default)]
+    url: Option<String>,
+}
+
+/// Open a DOI landing page, or an open-access https link, in the browser.
+async fn open_doi(Json(b): Json<OpenDoi>) -> impl IntoResponse {
+    let url = match (b.doi, b.url) {
+        (Some(d), _) if d.starts_with("10.") && !d.contains(char::is_whitespace) => format!("https://doi.org/{d}"),
+        (_, Some(u)) if u.starts_with("https://") && !u.contains(char::is_whitespace) => u,
+        _ => return bad("invalid link"),
+    };
+    match claude::open_in_browser(&url) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
 struct AddRef {
     bibtex: String,
     #[serde(default)]
@@ -1589,6 +1689,8 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/refs/pdfs", get(list_pdfs))
         .route("/api/refs/propose", post(propose_ref))
         .route("/api/refs/add", post(add_ref))
+        .route("/api/refs/search", post(search_refs))
+        .route("/api/open-link", post(open_doi))
         .route("/api/refs/{key}", put(update_ref))
         .route("/api/refs/{key}/open", post(open_ref_pdf))
         .route("/api/settings/pdf-dir", post(set_pdf_dir))

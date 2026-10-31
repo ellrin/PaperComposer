@@ -374,9 +374,87 @@ const PCRefs = (() => {
       };
       const foot = el("div", "row-end");
       foot.append(purpose, go);
-      p.append(search, tagChips(f, draw), list, foot);
+      // Search for new papers: a Claude feature, greyed out without Claude.
+      const claudeOn = !!state.engines && (state.engines.subscription.configured || state.engines.api.configured);
+      const find = iconButton("search", claudeOn ? "用 Claude 找新文獻" : "連接 Claude 後可搜尋新文獻", () => searchMode());
+      find.disabled = !claudeOn;
+      const top = el("div", "row-end");
+      top.append(search, find);
+      const listMode = el("div", "mode");
+      listMode.append(top, tagChips(f, draw), list, foot);
+      const searchBox = el("div", "mode");
+      searchBox.hidden = true;
+      p.append(listMode, searchBox);
       draw();
       setTimeout(() => search.focus());
+
+      function searchMode() {
+        listMode.hidden = true;
+        searchBox.hidden = false;
+        searchBox.innerHTML = "";
+        const sec = sections()[at.si];
+        const para = sec?.paragraphs[at.pi] ?? "";
+        const lead = para.replace(/\\[a-zA-Z]+\*?(\[[^\]]*\])?(\{[^}]*\})?/g, " ").replace(/[{}$~%]/g, " ").split(/(?<=[.!?。])\s+/).slice(0, 2).join(" ").replace(/\s+/g, " ").trim();
+        const req = el("textarea", "request");
+        req.rows = 3;
+        req.value = lead ? `幫我找關於「${lead}」的文獻` : "";
+        req.placeholder = "幫我找…";
+        const want = { q: "", tags: new Set() };
+        const back = iconButton("back", "回到文獻庫", () => { searchBox.hidden = true; listMode.hidden = false; draw(); });
+        const send = iconButton("send", "搜尋 Ctrl+Enter", () => run());
+        req.onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) run(); };
+        const head = el("div", "row-end");
+        head.append(back, req, send);
+        const results = el("div", "cite-list");
+        searchBox.append(head, tagChips(want, () => {}), results);
+        setTimeout(() => req.focus());
+
+        async function run() {
+          if (!req.value.trim()) return req.focus();
+          results.innerHTML = "";
+          results.append(el("p", "note", "Claude 搜尋中…"));
+          send.disabled = true;
+          let r;
+          try { r = await api("/api/refs/search", { request: req.value.trim(), tags: [...want.tags], engine: claudeVia() }); }
+          catch (e) { r = { error: e.message }; }
+          send.disabled = false;
+          results.innerHTML = "";
+          if (r.queries?.length) results.append(el("p", "note", r.queries.join(" · ")));
+          if (r.error && !r.results?.length) results.append(el("p", "note bad", r.error));
+          (r.results ?? []).forEach((c) => results.append(hit(c)));
+          if (r.results && !r.results.length && !r.error) results.append(el("p", "note", "沒有找到"));
+        }
+
+        function hit(c) {
+          const row = el("div", "hit-row");
+          const main = el("span", "c-main");
+          const t = el("b", "link", c.title);
+          t.onclick = () => api("/api/open-link", { doi: c.doi }).catch((e) => flash(e.message));
+          main.append(t, el("span", "meta", [c.authors, c.year, c.venue, `cited ${c.cited_by}`].filter(Boolean).join(" · ")));
+          if (c.reason) main.append(el("span", "why", c.reason));
+          const side = el("span", "c-side");
+          if (c.oa_url) side.append(iconButton("pdf", "開啟免費 PDF", () => api("/api/open-link", { url: c.oa_url }).catch((e) => flash(e.message))));
+          const add = el("button", "ghost", c.in_library ? "已在文獻庫" : "加入");
+          const pick = (key) => { chosen.add(key); go.textContent = `插入 ${chosen.size}`; add.textContent = "✓ 已選"; add.disabled = true; };
+          add.onclick = async () => {
+            if (c.in_library) return pick(c.in_library);
+            add.disabled = true;
+            add.textContent = "加入中…";
+            try {
+              const prop = await api("/api/refs/propose", { doi: c.doi, engine: chosenEngine() });
+              if (prop.exists) return pick(prop.exists);
+              if (prop.error || !prop.bibtex) throw new Error(prop.error ?? "無法取得書目");
+              const r = await api("/api/refs/add", { bibtex: prop.bibtex, summary: prop.summary, one_liner: prop.one_liner || c.reason, tags: prop.tags });
+              await load();
+              refreshGit();
+              pick(r.key);
+            } catch (e) { flash(e.message, 6000); add.disabled = false; add.textContent = "加入"; }
+          };
+          side.append(add);
+          row.append(main, side);
+          return row;
+        }
+      }
     });
   }
 

@@ -657,3 +657,11 @@ table.plan .src { color: var(--faint); font-size: 11px; }
 .card .one, .card .summary, .card .row-end input { background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); padding: 6px 8px; font: 12.5px var(--sans); }
 .card .summary { resize: vertical; }
 .card .chips-row { margin: 2px 0; }
+.cite-pop .mode { display: flex; flex-direction: column; gap: 8px; }
+.cite-pop .request { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); padding: 6px 8px; font: 12.5px/1.5 var(--sans); resize: vertical; }
+.hit-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+.hit-row .c-main { flex: 1; display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.hit-row .link { font-weight: 500; cursor: pointer; }
+.hit-row .link:hover { color: var(--accent); }
+.hit-row .why { font-size: 12px; color: var(--muted); }
+.hit-row .c-side { display: flex; gap: 4px; align-items: center; }
