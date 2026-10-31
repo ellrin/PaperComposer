@@ -26,7 +26,7 @@ cargo run -p pc-server
 
 開啟 <http://127.0.0.1:7878>。
 
-沒有指定工作區時，兩種模式都使用內建示範資料（`workspace-template/`），右上角顯示「示範資料」。
+沒有指定工作區時，兩種模式都使用內建示範資料（`workspace-template/`），右上角顯示「連接工作區」。
 
 ## 你的私人工作區
 
@@ -40,15 +40,15 @@ your-private-repo/
   prompts/      自訂提示詞（可選）
 ```
 
-第一次開啟 App 會彈出 **AI 與同步** 視窗（之後點右上角的插頭圖示開啟），四個步驟都可略過：
+第一次開啟 App 會彈出 **AI 與同步** 視窗（之後點右上角的「AI」開啟），三個步驟都可略過：
 
-1. **工作區**：三選一，每位使用者都指向**自己的**私有 repo，App 不綁定任何特定帳號
+1. **工作區與同步**：三選一，每位使用者都指向**自己的**私有 repo，App 不綁定任何特定帳號
+   - 建立新的：先在 GitHub 建立一個空白的 **private** repo（旁邊的外連圖示會開啟建立頁面），貼上網址並選擇存放位置；從範本建立資料夾、`git init` 並 push。網址留空則只存在這台電腦
+   - 從 repo 下載：第二台電腦用，clone 你的私有 repo；若偵測到是**公開** repo 會提醒先改成 private
    - 開啟資料夾：已經在電腦上的工作區；缺少的資料夾與範本檔會自動補上（不覆蓋既有檔案）
-   - Clone 我的 repo：貼上你的私有 repo 網址；若偵測到是**公開** repo 會提醒先改成 private
-   - 建立新的：從範本建立新資料夾並 `git init`，可選擇填入遠端，第一次 commit 後直接 push
-2. **Git**：檢查是否安裝 Git、設定 commit 作者名稱與 email
-3. **本機模型**：偵測記憶體（含 Mac 統一記憶體與 NVIDIA 顯示卡），標示推薦與放不下的模型。按「準備下載」先列出要下載的檔案、大小與來源，**確認後才下載**；下載完成自動啟動並設為預設
-4. **Claude**：兩種連線方式，自己選、隨時可切換（右側引擎的 Claude 選單也能切換）
+   - 需要同步時才會出現 Git 檢查：是否安裝 Git、commit 作者名稱與 email
+2. **本機模型**：偵測記憶體（含 Mac 統一記憶體與 NVIDIA 顯示卡），標示推薦與放不下的模型。按「準備下載」先列出要下載的檔案、大小與來源，**確認後才下載**；下載完成自動啟動並設為預設
+3. **Claude**：兩種連線方式，自己選、隨時可切換（右側引擎的 Claude 選單也能切換）
    - **登入帳號（訂閱）**：透過 [Claude Code](https://code.claude.com/docs/en/setup) 用你的 claude.ai Pro／Max 帳號，費用算在訂閱額度內。App 會偵測是否安裝、顯示官方安裝指令、按一下用瀏覽器登入並自動偵測完成。每次呼叫都在空的暫存資料夾執行 `claude -p`，關閉所有工具、不載入任何外掛設定，並移除 `ANTHROPIC_API_KEY` 以免改走 API 計費。只適合自己使用
    - **API key**：按外連圖示開啟 Anthropic Console 建立 key，貼回來儲存（只存在系統金鑰圈），按用量計費
 
@@ -76,6 +76,43 @@ your-private-repo/
 ## 公式
 
 紙張上的數學式用內建的 KaTeX 顯示（離線可用），支援 `$…$`、`\[…\]`、`equation`／`align` 等環境、自動編號與 `\eqref`，並會讀取論文 `main.tex` 與 `macros*.tex` 裡的 `\newcommand`、`\DeclareMathOperator`。這是編輯時的預覽，投稿用的 PDF 仍由 LaTeX 搭配期刊 cls 產生。
+
+## LaTeX 與期刊模板
+
+投稿用的 PDF 由 LaTeX 搭配期刊的 cls 產生，需要安裝 TeX：
+
+| 系統 | 建議 |
+|---|---|
+| macOS | [MacTeX](https://www.tug.org/mactex/)（完整版，約 5 GB，期刊模板用到的套件都有） |
+| Windows | [MiKTeX](https://miktex.org/)（缺套件時會自動下載）或 [TeX Live](https://tug.org/texlive/) |
+
+**用精簡版（BasicTeX）的話**，要自己補套件。IEEE 範本不用補；Springer Nature 範本需要：
+
+```sh
+sudo tlmgr update --self
+sudo tlmgr install sttools vruler breakurl apacite appendix wrapfig multirow ncctools rsfs
+```
+
+不想用 sudo，也可以裝在自己的帳號：先 `tlmgr init-usertree`，再把 `sudo tlmgr install` 換成 `tlmgr --usermode install`。
+
+**EPS 圖片**需要 Ghostscript 轉檔：macOS 執行 `brew install ghostscript`；Windows 的 TeX Live 已內建，MiKTeX 請另外安裝 [Ghostscript](https://ghostscript.com/releases/gsdnld.html)。PNG、JPG、PDF 圖片不需要。
+
+**編譯時出現 `File 'xxx.sty' not found`**：用下面的指令找出它屬於哪個套件，再安裝：
+
+```sh
+tlmgr search --global --file /xxx.sty
+```
+
+**期刊模板**放在工作區的 `publishers/<名稱>/`，主要範例命名為 `sample.tex`（見 [`workspace-template/publishers/`](workspace-template/publishers/README.md)）。常用的官方來源：
+
+| 期刊 | 來源 | 放法 |
+|---|---|---|
+| IEEE 期刊、會議 | [CTAN：IEEEtran](https://ctan.org/pkg/ieeetran) | `ieee-journal/`（`bare_jrnl.tex` → `sample.tex`）、`ieee-conference/`（`bare_conf.tex` → `sample.tex`），各附 `IEEEtran.cls`、`IEEEtran.bst`、`IEEEabrv.bib` |
+| Springer Nature | [LaTeX author support](https://www.springernature.com/gp/authors/campaigns/latex-author-support) | `springer-nature/`（`sn-article.tex` → `sample.tex`），附 `sn-jnl.cls`、`bst/` |
+| Elsevier | [CTAN：elsarticle](https://ctan.org/pkg/elsarticle) | `elsevier/` |
+| ACM | [CTAN：acmart](https://ctan.org/pkg/acmart) | `acm/` |
+
+以上 IEEE 與 Springer Nature 範本已在 macOS + BasicTeX（補上述套件與 Ghostscript）實際編譯通過。
 
 ## 連接模型
 

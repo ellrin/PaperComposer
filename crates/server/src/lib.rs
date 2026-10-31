@@ -603,13 +603,21 @@ async fn paper_dir(s: &Shared, name: &str) -> Result<PathBuf, axum::response::Re
 #[derive(Deserialize)]
 struct NewPaper {
     name: String,
+    /// A folder under publishers/; none = blank article.
+    #[serde(default)]
+    template: Option<String>,
 }
 
 async fn create_paper(State(s): State<Shared>, Json(b): Json<NewPaper>) -> impl IntoResponse {
     let Some(ws) = s.loaded.read().await.workspace.clone() else {
         return bad("no workspace");
     };
-    match paper::create_paper(&ws.join("papers"), &b.name) {
+    let made = match b.template.as_deref().filter(|t| !t.is_empty()) {
+        Some(t) if !paper::safe_name(t) => return bad("invalid template"),
+        Some(t) => paper::create_paper_from_template(&ws.join("papers"), &b.name, &ws.join("publishers").join(t)),
+        None => paper::create_paper(&ws.join("papers"), &b.name),
+    };
+    match made {
         Ok(_) => Json(serde_json::json!({ "name": b.name.trim() })).into_response(),
         Err(e) => bad(&e),
     }
@@ -644,8 +652,10 @@ async fn put_section(
         Ok(d) => d,
         Err(r) => return r,
     };
-    let section = Section { file: file.clone(), title: b.title, paragraphs: b.paragraphs };
     let path = dir.join("sections").join(&file);
+    // Keep what follows \section{} (e.g. \label) from the file on disk.
+    let tail = std::fs::read_to_string(&path).map(|t| paper::parse_section(&file, &t).tail).unwrap_or_default();
+    let section = Section { file: file.clone(), title: b.title, paragraphs: b.paragraphs, tail };
     if let Err(e) = std::fs::create_dir_all(dir.join("sections")).and_then(|_| paper::write_atomic(&path, &paper::render_section(&section))) {
         return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
     }

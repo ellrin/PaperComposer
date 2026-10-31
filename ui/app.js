@@ -717,8 +717,14 @@ function toggleFileMenu() {
   const row = el("div", "new-row");
   const input = el("input");
   input.placeholder = "新論文名稱，Enter 建立";
-  input.onkeydown = (e) => { if (e.key === "Enter") createPaper(input); if (e.key === "Escape") m.hidden = true; };
-  row.append(icon("plus"), input);
+  const tpl = el("select");
+  tpl.setAttribute("aria-label", "模板");
+  tpl.append(new Option("空白", ""));
+  (state.workspace?.publishers ?? []).forEach((p) => tpl.append(new Option(p, p)));
+  tpl.value = store.get("pc.newTemplate", "");
+  tpl.onchange = () => store.set("pc.newTemplate", tpl.value);
+  input.onkeydown = (e) => { if (e.key === "Enter") createPaper(input, tpl.value); if (e.key === "Escape") m.hidden = true; };
+  row.append(icon("plus"), input, tpl);
   m.append(row);
   const r = $("#actFile").getBoundingClientRect();
   m.style.top = `${r.bottom + 4}px`;
@@ -726,12 +732,12 @@ function toggleFileMenu() {
   m.hidden = false;
 }
 
-async function createPaper(input) {
+async function createPaper(input, template) {
   const name = input.value.trim();
   if (!name) return;
   input.disabled = true;
   try {
-    await api("/api/papers", { name });
+    await api("/api/papers", { name, template: template || null });
     state.workspace = await api("/api/workspace");
     $("#fileMenu").hidden = true;
     await openPaper(name);

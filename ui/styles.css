@@ -558,3 +558,4 @@ table.plan .src { color: var(--faint); font-size: 11px; }
 .checks li .ico svg.i { width: 14px; height: 14px; }
 .seg-row .seg.wide { flex: 0 1 480px; }
 .seg button { white-space: nowrap; }
+.menu .new-row select { flex: none; max-width: 120px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font: 11.5px var(--mono); padding: 3px 4px; }

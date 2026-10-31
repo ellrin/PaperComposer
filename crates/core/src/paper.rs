@@ -14,6 +14,10 @@ pub struct Section {
     pub file: String,
     pub title: String,
     pub paragraphs: Vec<String>,
+    /// Whatever follows `\section{...}` on its line, e.g. `\label{sec1}`;
+    /// kept verbatim so references survive a save.
+    #[serde(default)]
+    pub tail: String,
 }
 
 /// Accept plain names only: no separators, no parent references, no hidden files.
@@ -60,15 +64,18 @@ pub fn section_files(paper: &Path) -> Vec<String> {
 /// Split a section file into its `\section{}` title and paragraphs.
 pub fn parse_section(file: &str, text: &str) -> Section {
     let mut title = String::new();
+    let mut tail = String::new();
     let mut body = String::new();
+    let mut seen = false;
     for line in text.lines() {
         let t = line.trim_start();
-        if title.is_empty() && t.starts_with("\\section") {
-            if let Some(start) = t.find('{') {
-                let inner = &t[start + 1..];
-                title = inner[..inner.rfind('}').unwrap_or(inner.len())].to_string();
+        if !seen && t.starts_with("\\section") {
+            if let Some((arg, rest)) = t.find('{').and_then(|i| braced(&t[i..])) {
+                title = arg.to_string();
+                tail = rest.trim().to_string();
+                seen = true;
+                continue;
             }
-            continue;
         }
         body.push_str(line);
         body.push('\n');
@@ -76,13 +83,31 @@ pub fn parse_section(file: &str, text: &str) -> Section {
     if title.is_empty() {
         title = file.trim_end_matches(".tex").replace(['-', '_'], " ");
     }
-    Section { file: file.to_string(), title, paragraphs: crate::text::paragraphs(&body) }
+    Section { file: file.to_string(), title, paragraphs: crate::text::paragraphs(&body), tail }
+}
+
+/// `{...}rest` → (inside, rest), honouring nested braces.
+fn braced(s: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some((&s[1..i], &s[i + 1..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Write back: one sentence per line for prose; blocks with environments or
 /// comments are kept exactly as typed.
 pub fn render_section(s: &Section) -> String {
-    let mut out = format!("\\section{{{}}}\n", s.title);
+    let mut out = format!("\\section{{{}}}{}\n", s.title, s.tail);
     for p in &s.paragraphs {
         let p = p.trim();
         if p.is_empty() {
@@ -273,11 +298,138 @@ pub fn create_paper(papers: &Path, name: &str) -> Result<PathBuf, String> {
     );
     write_atomic(&dir.join("main.tex"), &main).map_err(io)?;
     for (f, title) in BLANK_SECTIONS {
-        let s = Section { file: format!("{f}.tex"), title: (*title).into(), paragraphs: vec![] };
+        let s = Section { file: format!("{f}.tex"), title: (*title).into(), paragraphs: vec![], tail: String::new() };
         write_atomic(&dir.join("sections").join(&s.file), &render_section(&s)).map_err(io)?;
     }
     write_atomic(&dir.join("refs.bib"), "").map_err(io)?;
     Ok(dir)
+}
+
+/// Files in a publisher folder that are not copied into a paper.
+const TEMPLATE_SKIP: &[&str] = &["sample.tex", "template.toml", "README", "README.md", "user-manual.pdf"];
+
+/// Create `papers/<name>/` from a publisher template (`publishers/<x>/`):
+/// the sample's preamble, front matter and back matter stay in main.tex,
+/// each `\section` becomes a file in `sections/` (comment lines dropped),
+/// and the class, style and support files are copied alongside so the paper
+/// compiles on its own.
+pub fn create_paper_from_template(papers: &Path, name: &str, template: &Path) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if !safe_name(name) {
+        return Err("名稱只能用文字、數字、空格、- _ .".into());
+    }
+    let bytes = std::fs::read(template.join("sample.tex")).map_err(|_| "模板裡沒有 sample.tex".to_string())?;
+    // Some publishers still ship Latin-1 samples; read those byte for byte.
+    let sample = String::from_utf8(bytes).unwrap_or_else(|e| e.into_bytes().iter().map(|&b| b as char).collect());
+    let split = split_sample(&sample).ok_or("sample.tex 裡找不到 \\begin{document}")?;
+    let dir = papers.join(name);
+    if dir.exists() {
+        return Err(format!("已經有一篇叫 {name} 的論文"));
+    }
+    let io = |e: std::io::Error| e.to_string();
+    std::fs::create_dir_all(dir.join("sections")).map_err(io)?;
+    copy_support(template, &dir).map_err(io)?;
+
+    let mut inputs = String::new();
+    for (i, (title, tail, body)) in split.sections.iter().enumerate() {
+        let file = format!("{:02}-{}.tex", i + 1, slug(title));
+        let mut s = parse_section(&file, &format!("\\section{{{title}}}{tail}\n{body}"));
+        s.file = file.clone();
+        write_atomic(&dir.join("sections").join(&file), &render_section(&s)).map_err(io)?;
+        inputs += &format!("\\input{{sections/{}}}\n", file.trim_end_matches(".tex"));
+    }
+    let main = format!("{}\\begin{{document}}\n{}\n{}\n{}\\end{{document}}\n", split.preamble, split.front.trim_end(), inputs, split.back);
+    write_atomic(&dir.join("main.tex"), &main).map_err(io)?;
+    Ok(dir)
+}
+
+struct Sample {
+    preamble: String,
+    front: String,
+    /// (title, rest of the \section line, body without comment lines)
+    sections: Vec<(String, String, String)>,
+    back: String,
+}
+
+/// Split a single-file sample into preamble / front matter / sections /
+/// back matter. Back matter starts at the bibliography or appendices.
+fn split_sample(src: &str) -> Option<Sample> {
+    let begin = src.find("\\begin{document}")?;
+    let preamble = src[..begin].to_string();
+    let after = &src[begin + "\\begin{document}".len()..];
+    let end = after.rfind("\\end{document}").unwrap_or(after.len());
+    let doc = &after[..end];
+
+    // Line-based walk over the document, ignoring commented-out lines when
+    // looking for structure.
+    let back_marks = ["\\appendix", "\\appendices", "\\begin{appendices}", "\\bibliography", "\\printbibliography", "\\begin{thebibliography}", "\\backmatter", "\\bibliographystyle"];
+    let mut front = String::new();
+    let mut back = String::new();
+    let mut sections: Vec<(String, String, String)> = Vec::new();
+    let mut in_back = false;
+    for line in doc.lines() {
+        let code = strip_comment(line).trim();
+        if in_back {
+            back += line;
+            back.push('\n');
+            continue;
+        }
+        if back_marks.iter().any(|m| code.starts_with(m)) {
+            in_back = true;
+            back += line;
+            back.push('\n');
+            continue;
+        }
+        if code.starts_with("\\section") && !code.starts_with("\\section*") {
+            if let Some((t, rest)) = code.find('{').and_then(|i| braced(&code[i..])) {
+                sections.push((t.to_string(), rest.trim().to_string(), String::new()));
+                continue;
+            }
+        }
+        match sections.last_mut() {
+            Some((_, _, body)) => {
+                // Drop pure comment lines: samples are full of instructions.
+                if line.trim_start().starts_with('%') {
+                    continue;
+                }
+                body.push_str(line);
+                body.push('\n');
+            }
+            None => {
+                front += line;
+                front.push('\n');
+            }
+        }
+    }
+    Some(Sample { preamble, front, sections, back })
+}
+
+fn slug(title: &str) -> String {
+    let s: String = title
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let s = s.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-");
+    if s.is_empty() { "section".into() } else { s.chars().take(40).collect() }
+}
+
+fn copy_support(from: &Path, to: &Path) -> std::io::Result<()> {
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        if n.starts_with('.') || TEMPLATE_SKIP.contains(&n.as_ref()) {
+            continue;
+        }
+        let dst = to.join(&name);
+        if e.file_type()?.is_dir() {
+            std::fs::create_dir_all(&dst)?;
+            copy_support(&e.path(), &dst)?;
+        } else {
+            std::fs::copy(e.path(), dst)?;
+        }
+    }
+    Ok(())
 }
 
 /// Atomic write (temp file + rename) so a crash never leaves half a file.
@@ -316,6 +468,47 @@ mod tests {
         assert!(create_paper(&tmp, "我的 論文-1").is_err(), "never overwrites");
         assert!(create_paper(&tmp, "../escape").is_err());
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn section_title_with_label_round_trips() {
+        let s = parse_section("a.tex", "\\section{Results for $\\mathbb{R}^{n}$}\\label{sec:res}\n\nOne. Two.\n");
+        assert_eq!(s.title, "Results for $\\mathbb{R}^{n}$");
+        assert_eq!(s.tail, "\\label{sec:res}");
+        let out = render_section(&s);
+        assert!(out.starts_with("\\section{Results for $\\mathbb{R}^{n}$}\\label{sec:res}\n"), "{out}");
+    }
+
+    #[test]
+    fn creates_a_paper_from_a_single_file_template() {
+        let root = std::env::temp_dir().join(format!("pc-tpl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tpl = root.join("publishers/demo");
+        std::fs::create_dir_all(tpl.join("bst")).unwrap();
+        std::fs::write(tpl.join("demo.cls"), "% class").unwrap();
+        std::fs::write(tpl.join("bst/x.bst"), "").unwrap();
+        std::fs::write(tpl.join("README"), "skip me").unwrap();
+        std::fs::write(
+            tpl.join("sample.tex"),
+            "\\documentclass{demo}\n\\begin{document}\n\\title{T}\\maketitle\n\\begin{abstract}A.\\end{abstract}\n\
+% instructions\n\\section{Introduction}\\label{sec1}\n% delete me\nFirst idea. Second idea.\n\n\\section{Methods}\nWe did it.\n\
+\\bibliography{refs}\n\\end{document}\n",
+        )
+        .unwrap();
+        let dir = create_paper_from_template(&root.join("papers"), "My paper", &tpl).unwrap();
+        let main = std::fs::read_to_string(dir.join("main.tex")).unwrap();
+        assert!(main.starts_with("\\documentclass{demo}"));
+        assert!(main.contains("\\begin{abstract}A.\\end{abstract}"));
+        assert!(main.contains("\\input{sections/01-introduction}\n\\input{sections/02-methods}"), "{main}");
+        assert!(main.contains("\\bibliography{refs}"));
+        assert!(dir.join("demo.cls").exists() && dir.join("bst/x.bst").exists());
+        assert!(!dir.join("README").exists() && !dir.join("sample.tex").exists());
+        let secs = load_paper(&dir);
+        assert_eq!(secs.len(), 2);
+        assert_eq!((secs[0].title.as_str(), secs[0].tail.as_str()), ("Introduction", "\\label{sec1}"));
+        assert_eq!(secs[0].paragraphs, vec!["First idea.\nSecond idea.".to_string()], "one sentence per line, comments dropped");
+        assert!(create_paper_from_template(&root.join("papers"), "My paper", &tpl).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
