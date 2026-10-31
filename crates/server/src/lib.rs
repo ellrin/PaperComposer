@@ -16,6 +16,7 @@ pub mod claude_code;
 pub mod engine;
 pub mod git;
 pub mod models;
+pub mod refimport;
 
 use axum::{
     extract::{Path as AxPath, Query as AxQuery, State},
@@ -814,6 +815,146 @@ async fn open_ref_pdf(State(s): State<Shared>, AxPath(key): AxPath<String>) -> i
     }
 }
 
+/// PDFs in this machine's folder, and which library entry each belongs to.
+async fn list_pdfs(State(s): State<Shared>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let Some(dir) = pdf_dir() else { return Json(serde_json::json!({ "dir": null, "files": [] })).into_response() };
+    let (_, notes) = load_library(&ws);
+    let linked: Vec<(String, PathBuf)> = notes.iter().filter_map(|n| Some((n.key.clone(), bib::find_pdf(&dir, n)?))).collect();
+    let mut files: Vec<serde_json::Value> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("pdf")))
+        .map(|p| {
+            let key = linked.iter().find(|(_, lp)| lp == &p).map(|(k, _)| k.clone());
+            serde_json::json!({ "name": p.file_name().unwrap().to_string_lossy(), "key": key })
+        })
+        .collect();
+    files.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    Json(serde_json::json!({ "dir": dir, "files": files })).into_response()
+}
+
+#[derive(Deserialize)]
+struct Propose {
+    #[serde(default)]
+    pdf: Option<String>,
+    #[serde(default)]
+    doi: Option<String>,
+    #[serde(default)]
+    engine: Option<EngineChoice>,
+}
+
+/// A library entry for a PDF or DOI, for the user to confirm: BibTeX from
+/// Crossref, abstract and type from OpenAlex, notes and tags from the model.
+async fn propose_ref(State(s): State<Shared>, Json(b): Json<Propose>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let pdf = b.pdf.filter(|n| paper::safe_name(n) && n.to_lowercase().ends_with(".pdf"));
+    let mut doi = b.doi.map(|d| d.trim().trim_start_matches("https://doi.org/").trim_start_matches("doi:").to_string()).filter(|d| !d.is_empty());
+    let mut head = String::new();
+    if let (Some(name), Some(dir)) = (&pdf, pdf_dir()) {
+        let path = dir.join(name);
+        let (h, d) = tokio::task::spawn_blocking(move || {
+            let h = refimport::pdf_head(&path);
+            let d = refimport::pdf_doi(&path, &h);
+            (h, d)
+        })
+        .await
+        .unwrap_or_default();
+        head = h;
+        if doi.is_none() {
+            doi = d;
+        }
+    }
+    let Some(doi) = doi else {
+        return Json(serde_json::json!({ "need_doi": true, "pdf": pdf })).into_response();
+    };
+    let (entries, _) = load_library(&ws);
+    if let Some(e) = entries.iter().find(|e| e.get("doi").is_some_and(|d| d.eq_ignore_ascii_case(&doi))) {
+        return Json(serde_json::json!({ "exists": e.key, "doi": doi, "pdf": pdf })).into_response();
+    }
+    let bibtex = match refimport::crossref_bibtex(&doi).await {
+        Ok(t) => t,
+        Err(e) => return Json(serde_json::json!({ "error": e, "doi": doi, "pdf": pdf })).into_response(),
+    };
+    let Some(mut entry) = bib::parse(&bibtex).0.into_iter().next() else {
+        return Json(serde_json::json!({ "error": "doi.org 回傳的 BibTeX 無法讀取", "doi": doi, "pdf": pdf })).into_response();
+    };
+    let taken: Vec<String> = entries.iter().map(|e| e.key.clone()).collect();
+    entry.key = refimport::make_key(&entry, &taken);
+    entry.fields.entry("doi".into()).or_insert_with(|| doi.clone());
+    let mut work = refimport::openalex(&doi).await;
+    if work.abstract_text.is_empty() {
+        work.abstract_text = refimport::semantic_scholar_abstract(&doi).await;
+    }
+    if work.abstract_text.is_empty() {
+        work.abstract_text = refimport::pdf_abstract(&head);
+    }
+    let venue = if entry.venue().is_empty() { work.venue.clone() } else { entry.venue() };
+    let profile = s.loaded.read().await.path.clone();
+    let tag_list = bib::read_tags(&profile.join("tags.csv"));
+    let mut tags = refimport::venue_tags(&profile, &venue);
+    if work.kind == "review" && !tags.contains(&"review".to_string()) {
+        tags.push("review".into());
+    }
+    let (mut summary, mut one_liner, mut note_error) = (String::new(), String::new(), None);
+    if has_writing_engine(&s, b.engine).await {
+        let prompt = refimport::notes_prompt(&entry.title(), &venue, &entry.year(), &work.kind, &work.abstract_text, &tag_list);
+        match writing_complete(&s, b.engine, &prompt, None).await {
+            Ok(reply) => match refimport::parse_notes(&reply, &tag_list) {
+                Some(n) => {
+                    summary = n.summary;
+                    one_liner = n.one_liner;
+                    for t in n.tags {
+                        if !tags.contains(&t) { tags.push(t); }
+                    }
+                }
+                None => note_error = Some("模型的回覆無法讀取".to_string()),
+            },
+            Err(e) => note_error = Some(e),
+        }
+    }
+    Json(serde_json::json!({
+        "key": entry.key, "bibtex": bib::write_entry(&entry), "title": entry.title(), "authors": entry.authors_short(),
+        "year": entry.year(), "venue": venue, "doi": doi, "pdf": pdf, "abstract": work.abstract_text,
+        "preprint_only": work.venue_type == "repository", "summary": summary, "one_liner": one_liner,
+        "title_mismatch": !refimport::title_matches(&entry.title(), &head),
+        "tags": tags, "note_error": note_error,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct AddRef {
+    bibtex: String,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    one_liner: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    pdf: Option<String>,
+}
+
+async fn add_ref(State(s): State<Shared>, Json(b): Json<AddRef>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let Some(e) = bib::parse(&b.bibtex).0.into_iter().next() else { return bad("BibTeX 無法讀取") };
+    let (mut entries, mut notes) = load_library(&ws);
+    let doi = e.get("doi").unwrap_or("").to_string();
+    if entries.iter().any(|x| x.key == e.key || (!doi.is_empty() && x.get("doi").is_some_and(|d| d.eq_ignore_ascii_case(&doi)))) {
+        return bad("文獻庫已經有這篇");
+    }
+    notes.push(bib::Note { key: e.key.clone(), summary: b.summary, one_liner: b.one_liner, tags: b.tags, doi, pdf: b.pdf.unwrap_or_default() });
+    let key = e.key.clone();
+    entries.push(e);
+    match save_library(&ws, &entries, &notes) {
+        Ok(()) => Json(serde_json::json!({ "key": key })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct PdfDir {
     path: String,
@@ -1445,6 +1586,9 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/refs", get(list_refs))
         .route("/api/refs/tags", get(ref_tags))
         .route("/api/refs/import", post(import_refs))
+        .route("/api/refs/pdfs", get(list_pdfs))
+        .route("/api/refs/propose", post(propose_ref))
+        .route("/api/refs/add", post(add_ref))
         .route("/api/refs/{key}", put(update_ref))
         .route("/api/refs/{key}/open", post(open_ref_pdf))
         .route("/api/settings/pdf-dir", post(set_pdf_dir))

@@ -64,8 +64,121 @@ const PCRefs = (() => {
     search.oninput = () => { filter.q = search.value; draw(); };
     const bar = el("div", "refs-bar");
     bar.append(search, iconButton("upload", "匯入 BibTeX", (e) => importPop(e.currentTarget)), iconButton("folder", "這台電腦的 PDF 資料夾", (e) => pdfPop(e.currentTarget)));
-    box.append(bar, tagChips(filter, draw), list);
+    queueBox ??= el("div", "queue");
+    box.append(bar, await intake(), queueBox, tagChips(filter, draw), list);
+    drawQueue();
     draw();
+  }
+
+  // ── bringing papers in: unlinked PDFs, or a DOI ──
+  const queue = []; // proposals waiting for the user
+  let queueBox = null; // created on first render: el() comes from app.js, loaded later
+  let busy = 0;
+
+  async function intake() {
+    const row = el("div", "intake");
+    const doi = el("input");
+    doi.placeholder = "DOI";
+    const add = el("button", "ghost", "加入");
+    add.onclick = () => { if (doi.value.trim()) { propose({ doi: doi.value.trim() }); doi.value = ""; } };
+    doi.onkeydown = (e) => { if (e.key === "Enter") add.click(); };
+    row.append(doi, add);
+    if (pdfDir) {
+      let files = [];
+      try { files = (await api("/api/refs/pdfs")).files.filter((f) => !f.key && !queue.some((q) => q.pdf === f.name)); } catch {}
+      if (files.length) {
+        const b = el("button", "primary small", `匯入 ${files.length} 篇 PDF`);
+        b.onclick = () => { b.remove(); files.forEach((f) => propose({ pdf: f.name })); };
+        row.prepend(b);
+      }
+    }
+    return row;
+  }
+
+  async function propose(body) {
+    busy++;
+    drawQueue();
+    let r;
+    try { r = await api("/api/refs/propose", { ...body, engine: chosenEngine() }); }
+    catch (e) { r = { error: e.message, ...body }; }
+    busy--;
+    if (r.exists) flash(`已在文獻庫：${r.exists}`);
+    else queue.push(r);
+    drawQueue();
+  }
+
+  function drawQueue() {
+    if (!queueBox) return;
+    queueBox.innerHTML = "";
+    if (busy) queueBox.append(el("p", "note", `查詢中 ${busy} 篇…`));
+    queue.forEach((q) => queueBox.append(card(q)));
+  }
+
+  function card(q) {
+    const c = el("div", "card");
+    const drop = () => { queue.splice(queue.indexOf(q), 1); drawQueue(); };
+    const retry = (doi) => { drop(); propose({ pdf: q.pdf ?? undefined, doi }); };
+    const doiFix = (label) => {
+      const row = el("div", "row-end");
+      const inp = el("input");
+      inp.placeholder = "DOI";
+      inp.value = q.doi && !q.need_doi ? q.doi : "";
+      const go = el("button", "ghost", label);
+      go.onclick = () => inp.value.trim() && retry(inp.value.trim());
+      inp.onkeydown = (e) => { if (e.key === "Enter") go.click(); };
+      row.append(inp, go);
+      return row;
+    };
+    const head = el("div", "card-head");
+    head.append(el("span", "file", q.pdf ?? q.doi ?? ""), iconButton("x", "略過", drop));
+    c.append(head);
+    if (q.need_doi || q.error) {
+      c.append(el("p", "note bad", q.error ?? "PDF 裡找不到 DOI"), doiFix("查詢"));
+      return c;
+    }
+    const t = el("div", "ref-title");
+    t.append(el("b", "", q.title), el("span", "meta", [q.authors, q.year, q.venue].filter(Boolean).join(" · ")));
+    c.append(t);
+    if (q.title_mismatch) c.append(el("p", "note bad", "標題和 PDF 內容對不上：確認 DOI"), doiFix("重新查詢"));
+    if (q.preprint_only) c.append(el("p", "note warn", "只有預印本"));
+    const one = el("input", "one");
+    one.value = q.one_liner;
+    one.placeholder = "一句話：這篇在說什麼";
+    const sum = el("textarea", "summary");
+    sum.rows = 3;
+    sum.value = q.summary;
+    sum.placeholder = "簡介";
+    const chips = el("div", "chips-row");
+    const chosen = new Set(q.tags);
+    tags.forEach((tg) => {
+      const b = el("button", "tchip", tg.label);
+      b.setAttribute("aria-pressed", String(chosen.has(tg.id)));
+      b.onclick = () => { chosen.has(tg.id) ? chosen.delete(tg.id) : chosen.add(tg.id); b.setAttribute("aria-pressed", String(chosen.has(tg.id))); };
+      chips.append(b);
+    });
+    const ok = el("button", "primary small", "加入");
+    ok.onclick = async () => {
+      try {
+        const r = await api("/api/refs/add", { bibtex: q.bibtex, summary: sum.value.trim(), one_liner: one.value.trim(), tags: [...chosen], pdf: q.pdf });
+        drop();
+        flash(`已加入 ${r.key}`);
+        refreshGit();
+        renderPage();
+      } catch (e) { flash(e.message, 6000); }
+    };
+    const foot = el("div", "row-end");
+    if (q.title_mismatch) {
+      // Probably the wrong record: only a deliberate, quieter "add anyway".
+      ok.className = "ghost";
+      ok.textContent = "仍要加入";
+      foot.append(ok);
+      c.append(foot);
+      return c;
+    }
+    foot.append(ok);
+    c.append(one, sum, chips, foot);
+    if (q.note_error) c.append(el("p", "note", `簡介沒有產生：${q.note_error}`));
+    return c;
   }
 
   function row(r) {
