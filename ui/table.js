@@ -13,6 +13,7 @@ const PCTable = (() => {
   let active = null; // { si, pi, t, sel, history, box }
   let styles = null; // built-in table styles
   let focusNext = null; // { si, pi }: activate this table once mounted
+  const fits = new Map(); // table JSON → measurement result
 
   const isTable = (text) => TABLE_RE.test(text);
 
@@ -243,6 +244,56 @@ const PCTable = (() => {
     select(box.si, box.pi); // highlight in the navigator
     if (!box.p.querySelector(".tbl-bar")) box.p.append(toolbar(box));
     paintSel(box);
+    checkFit(box);
+  }
+
+  // ── fitting the page: measured by LaTeX with the paper's class ──
+  let fitTimer;
+  function checkFit(box) {
+    clearTimeout(fitTimer);
+    fitTimer = setTimeout(async () => {
+      if (!state.paper) return;
+      const key = `${state.paper.name}\n${JSON.stringify(box.t)}`;
+      if (!fits.has(key)) {
+        try { fits.set(key, await api(`/api/papers/${encodeURIComponent(state.paper.name)}/table-fit`, { table: box.t })); }
+        catch (e) { fits.set(key, { error: e.message }); }
+      }
+      if (active === box) showFit(box, fits.get(key));
+    }, 500);
+  }
+
+  const SIZE_NAME = { normalsize: "正常", small: "small", footnotesize: "footnotesize", scriptsize: "scriptsize" };
+  const ENV_NAME = { table: "單欄", "table*": "跨雙欄", sidewaystable: "橫式" };
+
+  function showFit(box, r) {
+    const slot = box.p.querySelector(".tbl-bar .fit-slot");
+    if (!slot) return;
+    slot.innerHTML = "";
+    if (r.error) {
+      const chip = el("span", "fit", "—");
+      chip.title = r.error;
+      slot.append(chip);
+      return;
+    }
+    const a = r.advice;
+    const pct = Math.round((a.current.width / a.current.avail) * 100);
+    const chip = el("span", `fit ${a.ok ? (pct > 95 ? "tight" : "ok") : "bad"}`, a.ok ? `${pct}%` : a.reason);
+    chip.title = `${a.ok ? "" : `${a.reason}：`}${ENV_NAME[a.current.env.startsWith("sideways") ? "sidewaystable" : a.current.env] ?? a.current.env}可用 ${a.current.avail.toFixed(0)}pt · 表格 ${a.current.width.toFixed(0)}pt（${SIZE_NAME[a.current.font]}）`;
+    slot.append(chip);
+    if (!a.ok && a.suggest) {
+      const s = a.suggest;
+      const label = [s.env !== a.current.env ? ENV_NAME[s.env.startsWith("sideways") ? "sidewaystable" : s.env] : "", s.font !== a.current.font ? SIZE_NAME[s.font] : ""].filter(Boolean).join(" + ");
+      const fix = el("button", "ghost fit-fix", `改成${label}`);
+      fix.onclick = async () => {
+        await change(box, (t) => {
+          t.font = s.font === "normalsize" ? null : s.font;
+          if (s.env !== t.env) { t.env = s.env; if (s.env !== "table") t.placement = s.env.startsWith("sideways") ? null : "t"; }
+        });
+        if (s.env.startsWith("sideways")) needPackages(["rotating"]);
+        checkFit(box);
+      };
+      slot.append(fix);
+    }
   }
   function deactivate() {
     if (!active) return;
@@ -295,6 +346,7 @@ const PCTable = (() => {
     fn(box.t);
     draw(box);
     await save(box);
+    if (active === box) checkFit(box);
   }
   async function undo(box) {
     const prev = box.history.pop();
@@ -500,6 +552,8 @@ const PCTable = (() => {
     const styleWrap = el("span", "grp");
     styleWrap.append(styleBtn);
     bar.prepend(styleWrap);
+    const fitSlot = el("span", "grp fit-slot");
+    bar.append(fitSlot);
     const tail = el("span", "grp end");
     tail.append(
       iconButton("undo", "復原 Ctrl+Z", () => undo(box)),

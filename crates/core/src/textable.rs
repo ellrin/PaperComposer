@@ -9,6 +9,7 @@
 //! never silently rewrites a table it does not understand.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Cell {
@@ -883,6 +884,134 @@ pub fn new_table(s: &Style) -> Result<TexTable, String> {
     Ok(t)
 }
 
+// ── layout: fit the table to the journal's page ────────
+
+pub const FONT_STEPS: &[&str] = &["normalsize", "small", "footnotesize", "scriptsize"];
+
+/// Widths in points, measured by LaTeX with the paper's own class.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Measured {
+    /// Natural width of the tabular at each font size.
+    pub widths: BTreeMap<String, f64>,
+    pub columnwidth: f64,
+    pub textwidth: f64,
+    pub textheight: f64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Placement {
+    pub env: String,
+    pub font: String,
+    pub width: f64,
+    /// Space the environment offers: column, text width, or (rotated) text height.
+    pub avail: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Advice {
+    pub ok: bool,
+    pub current: Placement,
+    /// The first placement in the style's order that fits, when the current
+    /// one does not.
+    pub suggest: Option<Placement>,
+    pub reason: String,
+}
+
+fn family(env: &str) -> &str {
+    if env.starts_with("sideways") { "sidewaystable" } else if env == "table*" { "table*" } else { "table" }
+}
+
+fn avail(env: &str, m: &Measured) -> f64 {
+    match family(env) {
+        "sidewaystable" => m.textheight,
+        "table*" => m.textwidth,
+        _ => m.columnwidth,
+    }
+}
+
+/// Is `font` allowed for this many columns? The limits are for one
+/// column; a wider environment allows proportionally more.
+fn cols_ok(limits: &Limits, font: &str, cols: usize, widen: f64) -> bool {
+    limits.max_cols.get(font).is_none_or(|&max| cols as f64 <= (max as f64 * widen.max(1.0)).floor())
+}
+
+/// Packages the table's own markup needs.
+pub fn needed_packages(t: &TexTable) -> Vec<String> {
+    let mut out: Vec<&str> = Vec::new();
+    let kinds: Vec<&str> = t.rules.iter().flatten().map(|r| r.kind.as_str()).collect();
+    if kinds.iter().any(|k| ["toprule", "midrule", "bottomrule", "cmidrule"].contains(k)) {
+        out.push("booktabs");
+    }
+    if t.rows.iter().flatten().any(|c| c.rowspan > 1) {
+        out.push("multirow");
+    }
+    if t.cols.iter().any(|c| c == "S") {
+        out.push("siunitx");
+    }
+    if t.env.starts_with("sideways") {
+        out.push("rotating");
+    }
+    if t.before.iter().any(|l| l.contains("threeparttable")) {
+        out.push("threeparttable");
+    }
+    if t.rows.iter().flatten().any(|c| c.text.contains("\\checkmark")) {
+        out.push("amssymb");
+    }
+    out.into_iter().map(String::from).collect()
+}
+
+/// Check the table against the page and the style's limits, and find the
+/// first placement that fits, trying the style's overflow steps in order:
+/// smaller fonts in the same environment, then a wider environment
+/// (`table*`, `sidewaystable`) from the normal size down. A style whose base
+/// environment is already wide is never moved back to one column.
+pub fn advise(t: &TexTable, limits: &Limits, base_env: &str, m: &Measured) -> Advice {
+    let cols = t.cols.len();
+    let cur_font = t.font.clone().filter(|f| FONT_STEPS.contains(&f.as_str())).unwrap_or_else(|| "normalsize".into());
+    let cur_env = if t.env.is_empty() { "table".to_string() } else { t.env.clone() };
+    let width_at = |f: &str| m.widths.get(f).copied().unwrap_or(f64::INFINITY);
+    let place = |env: &str, font: &str| Placement { env: env.into(), font: font.into(), width: width_at(font), avail: avail(env, m) };
+    let widen = |p: &Placement| if m.columnwidth > 0.0 { p.avail / m.columnwidth } else { 1.0 };
+    let fits = |p: &Placement| p.width <= p.avail + 0.5 && cols_ok(limits, &p.font, cols, widen(p));
+    let current = place(&cur_env, &cur_font);
+    if fits(&current) {
+        return Advice { ok: true, reason: String::new(), current, suggest: None };
+    }
+
+    // Candidate order from the style: fonts listed in `overflow` before the
+    // first environment step stay in the base environment.
+    let mut envs: Vec<String> = vec![family(base_env).to_string()];
+    let mut fonts: Vec<String> = vec!["normalsize".into()];
+    for step in &limits.overflow {
+        if FONT_STEPS.contains(&step.as_str()) {
+            if !fonts.contains(step) { fonts.push(step.clone()); }
+        } else if !envs.contains(step) && family(step) != "table" {
+            envs.push(family(step).to_string());
+        }
+    }
+    let rank = |e: &str| ["table", "table*", "sidewaystable"].iter().position(|x| *x == family(e)).unwrap_or(0);
+    let floor = rank(base_env);
+    let mut suggest = None;
+    'outer: for env in envs.iter().filter(|e| rank(e) >= floor) {
+        for font in &fonts {
+            let p = place(env, font);
+            if fits(&p) {
+                suggest = Some(p);
+                break 'outer;
+            }
+        }
+    }
+    let over = current.width - current.avail;
+    let reason = if !cols_ok(limits, &cur_font, cols, widen(&current)) {
+        "欄數過多".to_string()
+    } else if over.is_finite() {
+        format!("超出 {:.0}pt", over)
+    } else {
+        "無法量測".into()
+    };
+    Advice { ok: false, current, suggest, reason }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1006,6 +1135,51 @@ Project & Energy & $\sigma_{calc}$ \\
         assert!(!t.before.iter().any(|l| l.contains("ruledtabular")) && !t.after.iter().any(|l| l.contains("ruledtabular")));
         let after: Vec<Vec<String>> = t.rows.iter().map(|r| r.iter().map(|c| c.text.clone()).collect()).collect();
         assert_eq!(after, cells, "content survives restyling");
+    }
+
+    #[test]
+    fn layout_advice_follows_the_style() {
+        let styles = builtin_styles();
+        let by = |id: &str| styles.iter().find(|s| s.id == id).unwrap().clone();
+        let m = |n: f64, sm: f64, fs: f64, ss: f64| Measured {
+            widths: [("normalsize", n), ("small", sm), ("footnotesize", fs), ("scriptsize", ss)].into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            columnwidth: 250.0, textwidth: 520.0, textheight: 680.0,
+        };
+        let st = by("booktabs");
+        let t = new_table(&st).unwrap(); // 3 columns
+        // fits as is
+        assert!(advise(&t, &st.limits, &st.look.env, &m(200.0, 180.0, 160.0, 140.0)).ok);
+        // too wide: shrink to small first
+        let a = advise(&t, &st.limits, &st.look.env, &m(270.0, 245.0, 220.0, 200.0));
+        assert!(!a.ok);
+        assert_eq!(a.suggest.as_ref().map(|p| (p.env.as_str(), p.font.as_str())), Some(("table", "small")));
+        // even footnotesize too wide: go to table* at normal size
+        let a = advise(&t, &st.limits, &st.look.env, &m(400.0, 360.0, 330.0, 300.0));
+        assert_eq!(a.suggest.as_ref().map(|p| (p.env.as_str(), p.font.as_str())), Some(("table*", "normalsize")));
+        // wider than the page: landscape
+        let a = advise(&t, &st.limits, &st.look.env, &m(600.0, 560.0, 530.0, 500.0));
+        assert_eq!(a.suggest.as_ref().map(|p| p.env.as_str()), Some("sidewaystable"));
+        // IEEE style never shrinks the font (overflow goes straight to table*)
+        let ie = by("ieee");
+        let a = advise(&new_table(&ie).unwrap(), &ie.limits, &ie.look.env, &m(270.0, 245.0, 220.0, 200.0));
+        assert_eq!(a.suggest.as_ref().map(|p| (p.env.as_str(), p.font.as_str())), Some(("table*", "normalsize")));
+        // a wide style is never moved back to one column
+        let w = by("wide");
+        let mut wt = new_table(&w).unwrap();
+        wt.font = None;
+        let a = advise(&wt, &w.limits, &w.look.env, &m(600.0, 560.0, 515.0, 500.0));
+        assert_eq!(a.suggest.as_ref().map(|p| (p.env.as_str(), p.font.as_str())), Some(("table*", "footnotesize")));
+        // a wide environment allows more columns at the same size
+        let mut nine = t.clone();
+        nine.cols = vec!["c".into(); 9];
+        let a = advise(&nine, &st.limits, &st.look.env, &m(300.0, 280.0, 260.0, 240.0));
+        assert_eq!(a.suggest.as_ref().map(|p| (p.env.as_str(), p.font.as_str())), Some(("table*", "normalsize")));
+        // too many columns for the font size, even if the width fits
+        let mut many = t.clone();
+        many.cols = vec!["c".into(); 9];
+        let a = advise(&many, &st.limits, &st.look.env, &m(240.0, 230.0, 220.0, 210.0));
+        assert!(!a.ok && a.reason.contains("欄"));
+        assert_eq!(a.suggest.as_ref().map(|p| p.font.as_str()), Some("footnotesize"));
     }
 
     #[test]

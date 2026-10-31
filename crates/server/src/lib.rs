@@ -17,6 +17,7 @@ pub mod engine;
 pub mod git;
 pub mod models;
 pub mod refimport;
+pub mod texmeasure;
 
 use axum::{
     extract::{Path as AxPath, Query as AxQuery, State},
@@ -378,6 +379,26 @@ async fn table_parse(Json(b): Json<TableText>) -> impl IntoResponse {
     match pc_core::textable::parse(&b.text) {
         Ok(t) => Json(serde_json::json!({ "table": t })),
         Err(e) => Json(serde_json::json!({ "error": e })),
+    }
+}
+
+#[derive(Deserialize)]
+struct FitBody {
+    table: pc_core::textable::TexTable,
+}
+
+/// Measure a table with the paper's class and advise how to fit it, using
+/// its style's limits (or general ones for an unstyled table).
+async fn table_fit(State(s): State<Shared>, AxPath(name): AxPath<String>, Json(b): Json<FitBody>) -> impl IntoResponse {
+    let dir = match paper_dir(&s, &name).await { Ok(d) => d, Err(r) => return r };
+    let style = b.table.style.as_deref().and_then(find_style).or_else(|| find_style("booktabs")).expect("booktabs style");
+    let base_env = if b.table.style.is_some() { style.look.env.clone() } else { "table".into() };
+    match texmeasure::measure(&dir, &b.table).await {
+        Ok(m) => {
+            let advice = pc_core::textable::advise(&b.table, &style.limits, &base_env, &m);
+            Json(serde_json::json!({ "advice": advice, "measured": m })).into_response()
+        }
+        Err(e) => Json(serde_json::json!({ "error": e })).into_response(),
     }
 }
 
@@ -1681,6 +1702,7 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/papers", post(create_paper))
         .route("/api/papers/{name}", get(get_paper))
         .route("/api/papers/{name}/packages", post(paper_packages))
+        .route("/api/papers/{name}/table-fit", post(table_fit))
         .route("/api/papers/{name}/citations", get(paper_citations).post(set_purpose))
         .route("/api/papers/{name}/bib", post(paper_bib))
         .route("/api/refs", get(list_refs))
