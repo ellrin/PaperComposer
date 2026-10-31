@@ -624,7 +624,7 @@ function setView(v) {
   view = v;
   document.querySelectorAll(".sheet").forEach((s) => (s.hidden = s.id !== v));
   document.querySelectorAll(".views [data-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === v)));
-  $("#actFile").hidden = $("#actInsert").hidden = v !== "editor";
+  $("#actFile").hidden = $("#actInsert").hidden = $("#actExport").hidden = v !== "editor";
   if (v === "sheetDb") openDb();
   if (v === "sheetTemplate") renderTemplates();
   if (v === "sheetRefs") PCRefs.renderPage();
@@ -641,6 +641,12 @@ const MENUS = {
   insert: () => [
     ["表格…", () => PCTable.insertNew($("#actInsert"))],
     ["引用…", () => PCRefs.picker($("#actInsert"))],
+  ],
+  export: () => [
+    ["PDF　Ctrl+P", () => PCExport.run("pdf")],
+    ["Word", () => PCExport.run("docx")],
+    "-",
+    ["在資料夾中顯示", PCExport.reveal],
   ],
   sheetTemplate: () => [
     ["出版社模板", () => setView("sheetTemplate"), view === "sheetTemplate"],
@@ -995,20 +1001,24 @@ function wire() {
     if (!e.target.closest("#fileMenu, #actFile")) $("#fileMenu").hidden = true;
     if (!e.target.closest("#modelMenu, #cEngine")) $("#modelMenu").hidden = true;
     if (!e.target.closest("#lookPop, #actLook")) toggleLook(false);
+    if (!e.target.closest("#exportPop, #actExport, #hoverMenu") && !PCExport.busy) PCExport.close();
   });
   document.addEventListener("keydown", (e) => {
     // Ctrl+S: save database edits, then commit and push the workspace.
     if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); syncNow(); return; }
+    // Ctrl+P: the submission PDF instead of printing the page.
+    if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); if (view === "editor") PCExport.run("pdf"); return; }
     if (e.key !== "Escape" || $("#dlgSetup").open) return;
     // Esc peels one layer: tip / menu / popover first, then back to the editor.
-    const layered = !!document.querySelector(".tip:not(.flash)") || !$("#fileMenu").hidden || !$("#modelMenu").hidden || !$("#lookPop").hidden;
-    closeTip(); $("#fileMenu").hidden = true; $("#modelMenu").hidden = true; toggleLook(false); closeHoverMenu(true);
+    const layered = !!document.querySelector(".tip:not(.flash)") || !$("#fileMenu").hidden || !$("#modelMenu").hidden || !$("#lookPop").hidden || !$("#exportPop").hidden;
+    closeTip(); $("#fileMenu").hidden = true; $("#modelMenu").hidden = true; toggleLook(false); closeHoverMenu(true); PCExport.close();
     if (!layered && view !== "editor" && !e.target.closest("input, textarea, select")) setView("editor");
   });
 
   wireHoverMenus();
   $("#actFile").onclick = toggleFileMenu;
   $("#actInsert").onclick = () => PCTable.insertNew($("#actInsert"));
+  $("#actExport").onclick = () => PCExport.run("pdf");
   document.querySelectorAll(".views [data-view]").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
   $("#actLook").onclick = () => toggleLook();
   $("#actConnect").onclick = () => Setup.open();

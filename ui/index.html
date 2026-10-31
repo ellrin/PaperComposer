@@ -23,6 +23,7 @@
     </nav>
     <button class="ico" id="actInsert" data-icon="insert2" data-menu="insert" aria-label="插入"></button>
     <button class="picker" id="actFile" aria-haspopup="true" aria-label="切換或新增論文"><span data-icon="file"></span><span id="paperName">—</span><span data-icon="chevron"></span></button>
+    <button class="ico" id="actExport" data-icon="export" data-menu="export" aria-label="匯出"></button>
     <div class="top-right">
       <div class="chips" id="profileChips"></div>
       <button class="ico" id="actConnect" data-icon="ai" data-menu="ai" aria-label="AI 與同步"></button>
@@ -242,12 +243,14 @@
   <div class="menu" id="fileMenu" hidden role="menu"></div>
   <div class="menu hover" id="hoverMenu" hidden role="menu"></div>
   <div class="menu" id="modelMenu" hidden role="menu"></div>
+  <div class="pop export-pop" id="exportPop" hidden></div>
 </div>
 <script src="vendor/katex/katex.min.js"></script>
 <script src="icons.js"></script>
 <script src="tex.js"></script>
 <script src="table.js"></script>
 <script src="refs.js"></script>
+<script src="export.js"></script>
 <script src="app.js"></script>
 <script src="setup.js"></script>
 </body>

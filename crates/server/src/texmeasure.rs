@@ -8,10 +8,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::process::Command;
 
-/// pdflatex: on PATH, or where TeX distributions install it (GUI apps on
-/// macOS do not get the shell's PATH).
 pub fn pdflatex() -> Option<PathBuf> {
-    let exe = if cfg!(windows) { "pdflatex.exe" } else { "pdflatex" };
+    tool("pdflatex")
+}
+
+/// A TeX (or Pandoc) program: on PATH, or where distributions install it
+/// (GUI apps on macOS do not get the shell's PATH).
+pub fn tool(name: &str) -> Option<PathBuf> {
+    let exe = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     dirs.extend(["/Library/TeX/texbin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from));
     for root in ["/usr/local/texlive"] {
@@ -27,7 +31,11 @@ pub fn pdflatex() -> Option<PathBuf> {
         dirs.push(PathBuf::from(local).join("Programs/MiKTeX/miktex/bin/x64"));
     }
     dirs.push(PathBuf::from("C:/Program Files/MiKTeX/miktex/bin/x64"));
-    dirs.into_iter().map(|d| d.join(exe)).find(|p| p.is_file())
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("Pandoc"));
+    }
+    dirs.push(PathBuf::from("C:/Program Files/Pandoc"));
+    dirs.into_iter().map(|d| d.join(&exe)).find(|p| p.is_file())
 }
 
 /// Everything before \begin{document}.

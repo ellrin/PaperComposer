@@ -139,6 +139,13 @@ tlmgr search --global --file /xxx.sty
 - **用 Claude 找新文獻**（插入引用視窗的放大鏡；沒連 Claude 時是灰的）：預設請求是「幫我找關於『段落開頭』的文獻」，可再選標籤引導（回顧→只找 review；新算法→近 3 年；經典算法→依引用數排序；頂會／頂刊→依期刊清單篩選）。Claude 把請求轉成搜尋關鍵字，**文獻一律來自 OpenAlex**（都有 DOI、排除只有預印本的），Claude 再從候選中排序並寫一句為什麼適合；它不能新增或改寫候選。點標題開啟 DOI 頁面，有開放取用版本可直接開 PDF；「加入」會向 Crossref 取得書目、寫好簡介與標籤後放進文獻庫，並勾選待插入。
 - **每篇論文的 `.bib` 自動產生**：只包含這篇有引用的文獻，檔名沿用 `main.tex` 的 `\bibliography{…}`。論文原有、不是 App 產生的 `.bib` 會先併入文獻庫，不會遺失。
 
+## 匯出
+
+上方的下載圖示：點一下輸出 PDF（或按 Ctrl+P），滑鼠移上去可選 Word。檔案放在 `papers/<論文>/export/`，資料夾內附 `.gitignore`，**匯出的檔案不會上 git**；編譯的中間檔放在系統的快取資料夾，不會弄亂論文資料夾。
+
+- **PDF**：用期刊自己的 class 編譯（pdflatex；`main.tex` 用了 `fontspec`、`xeCJK` 或寫了 `% !TEX program = xelatex` 時改用 XeLaTeX），自動跑 BibTeX／Biber 並重編到交互參照穩定。編譯前會重新產生這篇論文的 `.bib`。成功時顯示頁數；失敗時列出錯誤、出錯的原文、建議做法，點位置直接跳到那一段。找不到的引用、標籤和超出版面的行數也會列出。
+- **Word**：需要 [Pandoc](https://pandoc.org/installing.html)（macOS：`brew install pandoc`）。引用依論文資料夾裡的 `.csl` 排版（從模板建立的論文會一起帶過來：IEEE、CVPR 用 `ieee.csl`，Springer Nature 用 `springer-basic-brackets.csl`，LNCS 用 `springer-lecture-notes-in-computer-science.csl`，取自 [CSL styles](https://github.com/citation-style-language/styles)）；有 `reference.docx` 時套用其中的字型與標題樣式。投稿請以 PDF 為準，Word 適合給共同作者修改。
+
 ## 連接模型
 
 ### 一鍵安裝的本機模型
@@ -206,6 +213,8 @@ scripts/            Git hooks
 | GET | `/api/papers/{name}` | 論文各章節與段落 |
 | PUT | `/api/papers/{name}/sections/{file}` `{ title, paragraphs }` | 儲存章節（一句一行） |
 | GET / PUT | `/api/tables/{file}` | 讀寫資料庫 CSV（句型、片語、用詞、規則、範例、公式） |
+| POST | `/api/papers/{name}/export` `{ kind: "pdf" \| "docx" }` | 匯出：頁數、錯誤（含位置）、找不到的引用與標籤 |
+| POST | `/api/papers/{name}/export/open` `{ kind, reveal }` | 開啟匯出的檔案，或在資料夾中顯示 |
 | POST | `/api/decompose` `{ text, section }` | 把句子或段落拆成句型與片語建議 |
 | GET | `/api/claude` | Claude 連線狀態 |
 | POST | `/api/settings/claude` `{ key, model }` | 存入或移除 API key、選擇模型 |
