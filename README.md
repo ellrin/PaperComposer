@@ -40,7 +40,7 @@ your-private-repo/
   prompts/      自訂提示詞（可選）
 ```
 
-第一次開啟 App 會出現**設定精靈**（之後可從「設定 → 重新設定」開啟），四個步驟都可略過：
+第一次開啟 App 會彈出 **AI 與同步** 視窗（之後點右上角的插頭圖示開啟），四個步驟都可略過：
 
 1. **工作區**：三選一，每位使用者都指向**自己的**私有 repo，App 不綁定任何特定帳號
    - 開啟資料夾：已經在電腦上的工作區；缺少的資料夾與範本檔會自動補上（不覆蓋既有檔案）
@@ -48,7 +48,11 @@ your-private-repo/
    - 建立新的：從範本建立新資料夾並 `git init`，可選擇填入遠端，第一次 commit 後直接 push
 2. **Git**：檢查是否安裝 Git、設定 commit 作者名稱與 email
 3. **本機模型**：偵測記憶體（含 Mac 統一記憶體與 NVIDIA 顯示卡），標示推薦與放不下的模型。按「準備下載」先列出要下載的檔案、大小與來源，**確認後才下載**；下載完成自動啟動並設為預設
-4. **Claude**：貼上 API key（只存在系統金鑰圈）
+4. **Claude**：兩種連線方式，自己選、隨時可切換（右側引擎的 Claude 選單也能切換）
+   - **登入帳號（訂閱）**：透過 [Claude Code](https://code.claude.com/docs/en/setup) 用你的 claude.ai Pro／Max 帳號，費用算在訂閱額度內。App 會偵測是否安裝、顯示官方安裝指令、按一下用瀏覽器登入並自動偵測完成。每次呼叫都在空的暫存資料夾執行 `claude -p`，關閉所有工具、不載入任何外掛設定，並移除 `ANTHROPIC_API_KEY` 以免改走 API 計費。只適合自己使用
+   - **API key**：按外連圖示開啟 Anthropic Console 建立 key，貼回來儲存（只存在系統金鑰圈），按用量計費
+
+   兩種方式都有「測試連線」，會標明走的是訂閱還是 API。寫作、拆解、段落檢查都使用右側選的引擎，檢索、提示詞與驗證都相同
 
 也可以手動指定位置（擇一）：
 
@@ -77,7 +81,7 @@ your-private-repo/
 
 ### 一鍵安裝的本機模型
 
-設定精靈第 3 步會從 Hugging Face 下載 GGUF 模型、從 GitHub 下載對應平台的 [llama.cpp](https://github.com/ggml-org/llama.cpp)（Windows 用 Vulkan 版，支援 NVIDIA／AMD／Intel 顯示卡；Mac 用 Metal 版），存在本機資料夾（Windows：`%APPDATA%\PaperComposer`；macOS：`~/Library/Application Support/PaperComposer`；Linux：`~/.local/share/PaperComposer`）。App 啟動時自動開啟上次使用的模型，關閉時一併結束。
+「AI 與同步」第 3 步會從 Hugging Face 下載 GGUF 模型、從 GitHub 下載對應平台的 [llama.cpp](https://github.com/ggml-org/llama.cpp)（Windows 用 Vulkan 版，支援 NVIDIA／AMD／Intel 顯示卡；Mac 用 Metal 版），存在本機資料夾（Windows：`%APPDATA%\PaperComposer`；macOS：`~/Library/Application Support/PaperComposer`；Linux：`~/.local/share/PaperComposer`）。App 啟動時自動開啟上次使用的模型，關閉時一併結束。
 
 可選的模型列在 [`models/catalog.json`](models/catalog.json)，目前預設 Gemma 4 12B（Q8_0；記憶體較少時用 Q4_K_XL）。之後有新模型（例如 Gemma 5），在清單加一筆即可出現在精靈中：
 
@@ -143,10 +147,11 @@ scripts/            Git hooks
 | POST | `/api/decompose` `{ text, section }` | 把句子或段落拆成句型與片語建議 |
 | GET | `/api/claude` | Claude 連線狀態 |
 | POST | `/api/settings/claude` `{ key, model }` | 存入或移除 API key、選擇模型 |
+| POST | `/api/open/{page}` | 在系統瀏覽器開啟固定頁面：`anthropic-keys`（建立 API key）、`github-new-repo`（建立 private repo） |
 | GET | `/api/git/status` | 分支、遠端、未同步的檔案、領先或落後的 commit 數 |
 | POST | `/api/git/pull` | 從遠端更新（只做 fast-forward） |
 | POST | `/api/git/sync` `{ message? }` | commit 並 push |
-| GET | `/api/setup/status` | 設定精靈：工作區、Git、記憶體、模型、Claude 狀態 |
+| GET | `/api/setup/status` | AI 與同步：工作區、Git、記憶體、模型、Claude 狀態 |
 | POST | `/api/setup/workspace` `{ path, init }` | 使用既有資料夾（可補上範本） |
 | POST | `/api/setup/clone` `{ url, parent }` | clone 自己的私有 repo |
 | POST | `/api/setup/new` `{ path, remote? }` | 從範本建立新工作區 |
@@ -167,4 +172,4 @@ sh scripts/install-hooks.sh
 
 ## 開發說明
 
-本專案在開發過程中使用 Claude（Anthropic）協助撰寫程式碼。
+本專案與 Claude（Anthropic）協作開發，程式碼在 claude.ai 與 Claude Code 中共同撰寫。

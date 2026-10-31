@@ -244,6 +244,42 @@ pub fn load_paper(paper: &Path) -> Vec<Section> {
         .collect()
 }
 
+/// Sections a blank paper starts with: (file stem, heading).
+const BLANK_SECTIONS: &[(&str, &str)] = &[
+    ("introduction", "Introduction"),
+    ("related-work", "Related work"),
+    ("method", "Method"),
+    ("result", "Result"),
+    ("discussion", "Discussion"),
+    ("conclusion", "Conclusion"),
+];
+
+/// Create `papers/<name>/` with a plain article main.tex, empty sections and
+/// an empty refs.bib. Refuses to touch an existing folder.
+pub fn create_paper(papers: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if !safe_name(name) {
+        return Err("名稱只能用文字、數字、空格、- _ .".into());
+    }
+    let dir = papers.join(name);
+    if dir.exists() {
+        return Err(format!("已經有一篇叫 {name} 的論文"));
+    }
+    let io = |e: std::io::Error| e.to_string();
+    std::fs::create_dir_all(dir.join("sections")).map_err(io)?;
+    let inputs: String = BLANK_SECTIONS.iter().map(|(f, _)| format!("\\input{{sections/{f}}}\n")).collect();
+    let main = format!(
+        "\\documentclass{{article}}\n\\usepackage{{amsmath,amssymb}}\n\n\\title{{{name}}}\n\\author{{}}\n\n\\begin{{document}}\n\\maketitle\n\n{inputs}\n\\bibliographystyle{{plain}}\n\\bibliography{{refs}}\n\\end{{document}}\n"
+    );
+    write_atomic(&dir.join("main.tex"), &main).map_err(io)?;
+    for (f, title) in BLANK_SECTIONS {
+        let s = Section { file: format!("{f}.tex"), title: (*title).into(), paragraphs: vec![] };
+        write_atomic(&dir.join("sections").join(&s.file), &render_section(&s)).map_err(io)?;
+    }
+    write_atomic(&dir.join("refs.bib"), "").map_err(io)?;
+    Ok(dir)
+}
+
 /// Atomic write (temp file + rename) so a crash never leaves half a file.
 pub fn write_atomic(path: &Path, content: &str) -> std::io::Result<()> {
     let tmp: PathBuf = path.with_extension("tmp~");
@@ -266,6 +302,20 @@ mod tests {
         assert!(out.contains("x = 1. y = 2."), "environments kept verbatim");
         // Saving again changes nothing.
         assert_eq!(render_section(&parse_section("result.tex", &out)), out);
+    }
+
+    #[test]
+    fn creates_a_blank_paper_that_loads() {
+        let tmp = std::env::temp_dir().join(format!("pc-blank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = create_paper(&tmp, "我的 論文-1").unwrap();
+        let secs = load_paper(&dir);
+        assert_eq!(secs.len(), BLANK_SECTIONS.len());
+        assert_eq!(secs[0].title, "Introduction");
+        assert!(secs.iter().all(|s| s.paragraphs.is_empty()));
+        assert!(create_paper(&tmp, "我的 論文-1").is_err(), "never overwrites");
+        assert!(create_paper(&tmp, "../escape").is_err());
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

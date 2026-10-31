@@ -5,8 +5,8 @@
 //! - `max_words`       threshold "n", per sentence
 //! - `banned_words`    uses vocabulary.csv, per paragraph
 //!
-//! Soft rules (type = soft) are listed in the report as `pending` so the UI
-//! can show they exist; a model-backed engine fills them in later.
+//! Soft rules (type = soft) are listed in the report as `pending`; the
+//! `softcheck` module has a model judge them.
 
 use crate::profile::{Profile, Rule, RuleKind};
 use crate::text::{paragraphs, sentences, strip_latex, word_count};
@@ -21,7 +21,7 @@ pub enum Severity {
 }
 
 impl Severity {
-    fn parse(s: &str) -> Severity {
+    pub(crate) fn parse(s: &str) -> Severity {
         match s.trim().to_lowercase().as_str() {
             "error" => Severity::Error,
             "info" => Severity::Info,
@@ -53,7 +53,7 @@ pub struct ParagraphReport {
     pub pending: Vec<String>,
 }
 
-fn applies(rule: &Rule, scope: &str, section: Option<&str>) -> bool {
+pub(crate) fn applies(rule: &Rule, scope: &str, section: Option<&str>) -> bool {
     match rule.scope.split_once(':') {
         Some(("section", name)) => {
             section.is_some_and(|s| s.eq_ignore_ascii_case(name.trim())) && scope == "paragraph"

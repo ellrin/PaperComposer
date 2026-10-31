@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PaperComposer</title>
+  <link rel="icon" href="data:,">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+TC:wght@400;500;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
@@ -13,13 +14,19 @@
 <div class="app">
   <header class="top">
     <div class="brand">PAPER<b>/</b>COMPOSER</div>
-    <nav class="actions-top" aria-label="主要操作">
-      <button class="act" id="actFile" aria-haspopup="true"><span class="n">01</span>檔案<span class="val" id="paperName">—</span></button>
-      <button class="act" id="actTemplate"><span class="n">02</span>模板</button>
-      <button class="act" id="actDb"><span class="n">03</span>資料庫</button>
-      <button class="act" id="actSettings"><span class="n">04</span>設定</button>
+    <!-- Views: one is always active; clicking switches, no close buttons. -->
+    <nav class="views" role="tablist" aria-label="頁面">
+      <button class="ico" role="tab" data-view="editor" data-icon="pen" aria-label="寫作"></button>
+      <button class="ico" role="tab" data-view="sheetDb" data-icon="book" data-menu="sheetDb" aria-label="資料庫"></button>
+      <button class="ico" role="tab" data-view="sheetTemplate" data-icon="layout" data-menu="sheetTemplate" aria-label="模板"></button>
     </nav>
-    <div class="top-right" id="profileChips"></div>
+    <button class="picker" id="actFile" aria-haspopup="true" aria-label="切換或新增論文"><span data-icon="file"></span><span id="paperName">—</span><span data-icon="chevron"></span></button>
+    <div class="top-right">
+      <div class="chips" id="profileChips"></div>
+      <button class="ico" id="actConnect" data-icon="ai" data-menu="ai" aria-label="AI 與同步"></button>
+      <button class="ico" id="actLook" data-icon="palette" aria-label="外觀" aria-haspopup="true"></button>
+      <button class="ico" id="mode" aria-label="白天 / 黑夜"></button>
+    </div>
   </header>
 
   <aside class="left" aria-label="導覽">
@@ -36,7 +43,7 @@
     <section class="block" data-open="true">
       <div class="block-head">
         <span class="n">01</span><h3>寫作</h3>
-        <button class="help" data-tip="條列重點，一行一點；以 ! 開頭表示強調。模型只能用你句型庫裡的寫法組成段落。">?</button>
+        <button class="help" data-tip="條列重點，一行一點；以 ! 開頭表示強調。模型只能用你句型庫裡的寫法組成段落。模型會參考目前段落與下一段，寫出能接在兩段之間的段落。">?</button>
         <button class="toggle" aria-label="展開或收合">−</button>
       </div>
       <div class="block-body">
@@ -45,7 +52,7 @@
           <label><span>功能</span><select id="cFunction"><option value="">自動</option></select></label>
           <label><span>字數</span><span class="range"><input id="cMin" type="number" min="20" step="10" value="120"><i>–</i><input id="cMax" type="number" min="20" step="10" value="180"></span></label>
           <label><span>語言</span><span class="seg" id="cLang"><button data-v="en" aria-pressed="true">EN</button><button data-v="zh" aria-pressed="false">中</button></span></label>
-          <label><span>前後段</span><span class="seg" id="cContext"><button data-v="on" aria-pressed="true">連貫</button><button data-v="off" aria-pressed="false">獨立</button></span></label>
+          <label class="span2"><span>引擎</span><span class="seg" id="cEngine"><button data-v="local">本機</button><button data-v="claude"><span class="lbl">Claude</span><span data-icon="chevron"></span></button></span></label>
         </div>
         <textarea id="points" rows="5" placeholder="- ! 主要發現&#10;- 次要重點"></textarea>
         <button class="primary" id="generate"><span>生成</span><kbd>Ctrl ↵</kbd></button>
@@ -56,19 +63,17 @@
     <section class="block" data-open="true">
       <div class="block-head">
         <span class="n">02</span><h3>檢查</h3>
-        <button class="help" data-tip="目前段落觸發的規則。灰色是需要模型的軟規則，連接引擎後才會判讀。">?</button>
+        <button class="help" data-tip="選到的段落會帶進來。格式規則即時檢查；資料庫「規則」裡的軟規則，按「檢查」才交給模型判讀。">?</button>
         <button class="toggle" aria-label="展開或收合">−</button>
       </div>
-      <div class="block-body"><ul class="findings" id="findings"></ul></div>
+      <div class="block-body"><div class="chk-head" id="chkHead"></div><ul class="findings" id="findings"></ul><div id="softBox"></div></div>
     </section>
   </aside>
 
-  <!-- Sheets: full-height panels under the top bar -->
+  <!-- Sheets: views that replace the editor area under the top bar -->
   <section class="sheet" id="sheetDb" hidden aria-label="資料庫">
     <div class="sheet-head">
-      <h2><span class="n">03</span>資料庫</h2>
       <div class="tabs" id="dbTabs" role="tablist"></div>
-      <button class="x" data-close aria-label="關閉">✕</button>
     </div>
     <div class="db">
       <div class="db-main">
@@ -76,8 +81,8 @@
           <input type="search" id="dbFilter" placeholder="篩選">
           <select id="dbSection" aria-label="章節"><option value="">全部章節</option></select>
           <span class="dirty" id="dbDirty" hidden>未儲存</span>
-          <button class="ghost" id="dbAdd">＋ 新增</button>
-          <button class="primary small" id="dbSave">儲存</button>
+          <button class="ico" id="dbAdd" data-icon="plus" aria-label="新增一列"></button>
+          <button class="ico" id="dbSave" data-icon="save" aria-label="儲存 Ctrl+S"></button>
         </div>
         <div class="db-issues" id="dbIssues"></div>
         <div class="grid-wrap"><table class="grid" id="dbGrid"></table></div>
@@ -97,126 +102,138 @@
     </div>
   </section>
 
-  <section class="sheet" id="sheetSettings" hidden aria-label="設定">
-    <div class="sheet-head">
-      <h2><span class="n">04</span>設定</h2>
-      <button class="x" data-close aria-label="關閉">✕</button>
-    </div>
-    <div class="settings">
-      <section class="set">
-        <h3><span class="n">01</span>介面主題</h3>
-        <div class="themes">
-          <button class="theme" data-theme="orange"><span class="swatch"><i style="background:#27272a"></i><i style="background:#ff6b35"></i><i style="background:#f0f0f1"></i></span>深灰橘</button>
-          <button class="theme" data-theme="night"><span class="swatch"><i style="background:#0c0b24"></i><i style="background:#5b3df5"></i><i style="background:#f3e600"></i></span>藍紫黃</button>
-          <button class="theme" data-theme="terminal"><span class="swatch"><i style="background:#080d0a"></i><i style="background:#11965a"></i><i style="background:#2ef08a"></i></span>綠黑</button>
-          <button class="mode" id="mode" aria-label="切換白天或黑夜"></button>
-          <button class="theme" id="dimPaper" aria-pressed="false">調暗紙張</button>
-        </div>
-      </section>
-      <section class="set">
-        <h3><span class="n">02</span>Claude <button class="help" data-tip="API key 只存在這台電腦的系統金鑰圈，不會寫進任何檔案或 repo。">?</button></h3>
-        <div class="kv"><span>狀態</span><span id="claudeState"></span></div>
-        <div class="kv"><span>API key</span><span class="inline"><input type="password" id="claudeKey" placeholder="sk-ant-…" autocomplete="off"><button class="ghost" id="claudeSave">儲存</button><button class="ghost" id="claudeRemove">移除</button></span></div>
-        <div class="kv"><span>模型</span><select id="claudeModel"></select></div>
-      </section>
-      <section class="set">
-        <h3><span class="n">03</span>本機模型</h3>
-        <div class="kv"><span>狀態</span><span id="engineState"></span></div>
-      </section>
-      <section class="set">
-        <button class="ghost" id="openSetup">開啟設定精靈</button>
-      </section>
-      <section class="set">
-        <h3><span class="n">04</span>工作區</h3>
-        <div class="kv"><span>位置</span><code id="wsPath"></code></div>
-      </section>
-    </div>
-  </section>
-
-  <section class="sheet" id="sheetSetup" hidden aria-label="設定精靈">
-    <div class="sheet-head">
-      <h2><span class="n">00</span>設定精靈</h2>
-      <div class="tabs" id="wzTabs" role="tablist">
-        <button data-step="0"><span class="c">01</span>工作區<span class="st"></span></button>
-        <button data-step="1"><span class="c">02</span>Git<span class="st"></span></button>
-        <button data-step="2"><span class="c">03</span>本機模型<span class="st"></span></button>
-        <button data-step="3"><span class="c">04</span>Claude<span class="st"></span></button>
-      </div>
-      <button class="x" data-close aria-label="關閉">✕</button>
-    </div>
-    <div class="wizard">
-      <!-- 01 workspace -->
-      <section class="step" data-step="0">
-        <div class="now" id="wzWsNow"></div>
-        <div class="seg wide" id="wzWsMode">
-          <button data-v="open" aria-pressed="true">開啟資料夾</button>
-          <button data-v="clone" aria-pressed="false">Clone 我的 repo</button>
-          <button data-v="new" aria-pressed="false">建立新的</button>
-        </div>
-        <div class="form" data-mode="open">
-          <label><span>資料夾</span><input id="wzOpenPath" placeholder="C:\Users\me\Documents\my-private-workspace"></label>
-          <label class="check"><input type="checkbox" id="wzOpenInit" checked><span>補上缺少的資料夾<button class="help" data-tip="只會新增範本裡有、但你資料夾裡沒有的檔案，不會覆蓋任何現有檔案。">?</button></span></label>
-          <button class="primary small" id="wzOpen">使用這個資料夾</button>
-        </div>
-        <div class="form" data-mode="clone" hidden>
-          <label><span>repo 網址</span><input id="wzCloneUrl" placeholder="https://github.com/you/your-private-workspace.git"><em class="vis" id="wzCloneVis"></em></label>
-          <label><span>存放位置</span><input id="wzCloneParent" placeholder="C:\Users\me\Documents"></label>
-          <button class="primary small" id="wzClone">Clone</button>
-        </div>
-        <div class="form" data-mode="new" hidden>
-          <label><span>新資料夾</span><input id="wzNewPath" placeholder="C:\Users\me\Documents\my-private-workspace"></label>
-          <label><span>遠端（選填）</span><input id="wzNewRemote" placeholder="你自己建立的空白 private repo 網址"><em class="vis" id="wzNewVis"></em></label>
-          <button class="primary small" id="wzNew">從範本建立</button>
-        </div>
-      </section>
-
-      <!-- 02 git -->
-      <section class="step" data-step="1" hidden>
-        <div class="now" id="wzGitNow"></div>
-        <div class="form">
-          <label><span>作者名稱</span><input id="wzGitName"></label>
-          <label><span>email</span><input id="wzGitEmail" placeholder="可用 GitHub 的 noreply 信箱"></label>
-          <button class="primary small" id="wzGitSave">儲存</button>
-        </div>
-      </section>
-
-      <!-- 03 local model -->
-      <section class="step" data-step="2" hidden>
-        <div class="now" id="wzSys"></div>
-        <ul class="models" id="wzModels"></ul>
-        <div id="wzPlan"></div>
-      </section>
-
-      <!-- 04 claude -->
-      <section class="step" data-step="3" hidden>
-        <div class="now" id="wzClaudeNow"></div>
-        <div class="form">
-          <label><span>API key</span><input type="password" id="wzClaudeKey" placeholder="sk-ant-…" autocomplete="off"></label>
-          <label><span>模型</span><select id="wzClaudeModel"></select></label>
-          <button class="primary small" id="wzClaudeSave">儲存</button>
-        </div>
-      </section>
-
-      <div class="wz-foot">
-        <button class="ghost" id="wzPrev">上一步</button>
-        <button class="ghost" id="wzSkip">略過</button>
-        <button class="primary small" id="wzNext">下一步</button>
-      </div>
-    </div>
-  </section>
-
   <section class="sheet" id="sheetTemplate" hidden aria-label="模板">
     <div class="sheet-head">
-      <h2><span class="n">02</span>模板</h2>
+      <h2>出版社模板</h2>
       <button class="help" data-tip="把出版社的 .cls 與範例 .tex 放進工作區的 publishers/〈名稱〉/。匯入與欄位對應即將加入。">?</button>
-      <button class="x" data-close aria-label="關閉">✕</button>
     </div>
     <ul class="list" id="publishers"></ul>
   </section>
 
+  <!-- Appearance popover -->
+  <div class="pop" id="lookPop" hidden role="dialog" aria-label="外觀">
+    <div class="themes">
+      <button class="theme" data-theme="orange" aria-label="深灰橘"><span class="swatch"><i style="background:#27272a"></i><i style="background:#ff6b35"></i><i style="background:#f0f0f1"></i></span></button>
+      <button class="theme" data-theme="night" aria-label="藍紫黃"><span class="swatch"><i style="background:#0c0b24"></i><i style="background:#5b3df5"></i><i style="background:#f3e600"></i></span></button>
+      <button class="theme" data-theme="terminal" aria-label="綠黑"><span class="swatch"><i style="background:#080d0a"></i><i style="background:#11965a"></i><i style="background:#2ef08a"></i></span></button>
+      <button class="ico" id="dimPaper" data-icon="contrast" aria-label="調暗紙張" aria-pressed="false"></button>
+    </div>
+  </div>
+
+  <!-- AI & sync: pops up on first run, reopened from the AI button -->
+  <dialog class="dialog" id="dlgSetup" aria-label="AI 與同步">
+    <div class="dlg" tabindex="-1" autofocus>
+      <div class="dlg-head">
+        <h2>AI 與同步</h2>
+        <div class="tabs" id="wzTabs" role="tablist">
+          <button data-step="0"><span class="c">01</span>工作區與同步<span class="st"></span></button>
+          <button data-step="1"><span class="c">02</span>本機模型<span class="st"></span></button>
+          <button data-step="2"><span class="c">03</span>Claude<span class="st"></span></button>
+        </div>
+        <button class="ico" id="wzClose" data-icon="x" aria-label="關閉 Esc"></button>
+      </div>
+      <div class="wizard">
+        <!-- 01 workspace & sync: each user links their own private workspace;
+             Git shows up only when a repo is involved -->
+        <section class="step" data-step="0">
+          <div class="now" id="wzWsNow"></div>
+          <div class="seg-row">
+            <div class="seg wide" id="wzWsMode">
+              <button data-v="new">建立新的</button>
+              <button data-v="clone">從 repo 下載</button>
+              <button data-v="open">開啟資料夾</button>
+            </div>
+            <button class="help" data-tip="論文、句型庫、出版社模板都存在工作區。填上你自己的 GitHub private repo 就能在多台電腦同步；留空則只存在這台電腦。">?</button>
+          </div>
+          <div class="form" data-mode="new">
+            <label><span>private repo</span><input id="wzNewRemote" placeholder="留空＝只存在這台電腦"><span class="inline"><em class="vis" id="wzNewVis"></em><button class="ico" id="wzGhNew" data-icon="external" aria-label="到 GitHub 建立空白 private repo"></button></span></label>
+            <label><span>位置</span><input id="wzNewPath"></label>
+            <button class="primary small" id="wzNew">建立</button>
+          </div>
+          <div class="form" data-mode="clone" hidden>
+            <label><span>private repo</span><input id="wzCloneUrl" placeholder="https://github.com/you/my-paper-workspace.git"><span class="inline"><em class="vis" id="wzCloneVis"></em></span></label>
+            <label><span>位置</span><input id="wzCloneParent"></label>
+            <button class="primary small" id="wzClone">下載</button>
+          </div>
+          <div class="form" data-mode="open" hidden>
+            <label><span>資料夾</span><input id="wzOpenPath"></label>
+            <label class="check"><input type="checkbox" id="wzOpenInit" checked><span>補上缺少的資料夾<button class="help" data-tip="只新增範本裡有、資料夾裡沒有的檔案，不覆蓋任何現有檔案。">?</button></span></label>
+            <button class="primary small" id="wzOpen">開啟</button>
+          </div>
+
+          <div class="git-box" id="wzGitBox" hidden>
+            <ul class="checks" id="wzGitNow"></ul>
+            <div class="form" id="wzGitForm" hidden>
+              <label><span>作者</span><input id="wzGitName" placeholder="名稱"></label>
+              <label><span>email</span><input id="wzGitEmail" placeholder="可用 GitHub noreply 信箱"></label>
+              <button class="primary small" id="wzGitSave">儲存</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 02 local model -->
+        <section class="step" data-step="1" hidden>
+          <div class="now" id="wzSys"></div>
+          <ul class="models" id="wzModels"></ul>
+          <div id="wzPlan"></div>
+        </section>
+
+        <!-- 03 claude: two ways to connect, the user picks and can switch -->
+        <section class="step" data-step="2" hidden>
+          <div class="seg-row">
+            <div class="seg wide" id="wzVia">
+              <button data-v="subscription">登入帳號（訂閱）</button>
+              <button data-v="api">API key</button>
+            </div>
+            <button class="help" data-tip="登入帳號：用 claude.ai Pro／Max 帳號，透過 Claude Code 連線，算在訂閱額度內，只適合自己使用。API key：按用量另外計費，key 只存在這台電腦的系統金鑰圈。兩種都設定好的話，點一下就能切換。">?</button>
+          </div>
+
+          <div class="via" data-via="subscription">
+            <ul class="checks" id="ccChecks"></ul>
+            <div class="cmd" id="ccInstall" hidden><code id="ccCmd"></code><button class="ico" id="ccCopy" data-icon="copy" aria-label="複製指令"></button></div>
+            <div class="actions-row">
+              <button class="ghost" id="ccRecheck">重新檢查</button>
+              <button class="primary small" id="ccLogin">用瀏覽器登入</button>
+            </div>
+          </div>
+
+          <div class="via form" data-via="api" hidden>
+            <!-- connected: masked key; editing: an empty field for a new one -->
+            <div class="kv" id="wzKeyShow"><span>API key</span><code class="masked" id="wzKeyMasked"></code><span class="inline">
+              <button class="ico" id="wzKeyEdit" data-icon="pen" aria-label="更換 key"></button>
+              <button class="ico" id="wzClaudeRemove" data-icon="trash" aria-label="移除 key"></button>
+            </span></div>
+            <label id="wzKeyEnter"><span>API key</span><input type="password" id="wzClaudeKey" placeholder="sk-ant-…" autocomplete="off"><span class="inline">
+              <button class="ico" id="wzClaudeGetKey" data-icon="external" aria-label="到 Anthropic Console 建立 key"></button>
+              <button class="ico" id="wzKeyCancel" data-icon="x" aria-label="取消更換"></button>
+            </span></label>
+            <button class="primary small" id="wzClaudeSave">儲存 key</button>
+          </div>
+
+          <div class="form">
+            <label><span>模型</span><select id="wzClaudeModel"></select></label>
+          </div>
+          <div class="actions-row test-row">
+            <button class="ghost" id="wzTest">測試連線</button>
+            <span class="note" id="wzTestOut"></span>
+          </div>
+        </section>
+
+        <div class="wz-foot">
+          <button class="ghost" id="wzPrev">上一步</button>
+          <button class="ghost" id="wzSkip">略過</button>
+          <button class="primary small" id="wzNext">下一步</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   <div class="menu" id="fileMenu" hidden role="menu"></div>
+  <div class="menu hover" id="hoverMenu" hidden role="menu"></div>
+  <div class="menu" id="modelMenu" hidden role="menu"></div>
 </div>
 <script src="vendor/katex/katex.min.js"></script>
+<script src="icons.js"></script>
 <script src="tex.js"></script>
 <script src="app.js"></script>
 <script src="setup.js"></script>

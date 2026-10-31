@@ -13,6 +13,7 @@ pub mod table;
 pub mod vcs;
 pub mod profile;
 pub mod retrieve;
+pub mod softcheck;
 pub mod text;
 
 pub use check::{check_text, ParagraphReport, Severity, Finding};

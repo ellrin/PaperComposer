@@ -1,11 +1,12 @@
-// Setup wizard: workspace, Git, local model, Claude.
+// "AI & sync" dialog: workspace & sync, local model, Claude.
+// Pops up on first run; the AI button in the top bar reopens it.
 // Every user points the app at their own private workspace; nothing here is
 // tied to a particular account or repository.
 
 const Setup = (() => {
   let st = null;
   let step = 0;
-  let mode = "open";
+  let mode = null; // workspace tab; defaults to "new" until a workspace is set
   let selected = null;
   let poll = null;
   let changed = false; // workspace changed: reload the app on close
@@ -18,28 +19,42 @@ const Setup = (() => {
     render();
   }
 
-  function open(s = 0) {
-    document.querySelectorAll(".sheet").forEach((x) => (x.hidden = true));
-    $("#sheetSetup").hidden = false;
+  const STEPS = ["workspace", "model", "claude"];
+  const LAST = STEPS.length - 1;
+
+  /** Open on step `s` (index or name), or on the first unfinished one. */
+  async function open(s, showVia) {
+    if (typeof s === "string") s = STEPS.indexOf(s);
+    const dlg = $("#dlgSetup");
+    if (!dlg.open) dlg.showModal();
+    if (showVia) via = showVia;
+    await Promise.all([refresh(), loadEngines(true)]);
+    if (s == null) { const i = done().indexOf(false); s = i < 0 ? 0 : i; }
     step = s;
-    refresh();
+    render();
   }
 
-  function close() {
+  const close = () => $("#dlgSetup").close();
+
+  // Runs however the dialog closes: button, Esc, backdrop or "完成".
+  function onClosed() {
     clearInterval(poll);
-    $("#sheetSetup").hidden = true;
+    clearInterval(ccPoll); ccPoll = null;
+    via = null;
     store.set("pc.setupSeen", true);
     if (changed) location.reload();
   }
 
+  const gitOk = () => st.git_tool.installed && !!st.git_tool.name && !!st.git_tool.email;
   const done = () => [
-    !!st && !st.workspace.demo && st.workspace.has_profile,
-    !!st && st.git_tool.installed && !!st.git_tool.name && !!st.git_tool.email,
+    // A workspace that syncs also needs Git and a commit author.
+    !!st && !st.workspace.demo && st.workspace.has_profile && (!st.workspace.git?.remote || gitOk()),
     !!st && (!!st.running || st.models.some((m) => m.installed)),
-    !!st && st.claude.configured,
+    !!(state.engines?.subscription.configured || state.engines?.api.configured),
   ];
 
   function render() {
+    if (!st) return;
     const d = done();
     document.querySelectorAll("#wzTabs button").forEach((b, i) => {
       b.setAttribute("aria-selected", String(i === step));
@@ -48,8 +63,8 @@ const Setup = (() => {
     });
     document.querySelectorAll(".wizard .step").forEach((s) => (s.hidden = +s.dataset.step !== step));
     $("#wzPrev").disabled = step === 0;
-    $("#wzNext").textContent = step === 3 ? "完成" : "下一步";
-    [renderWorkspace, renderGit, renderModels, renderClaude][step]();
+    $("#wzNext").textContent = step === LAST ? "完成" : "下一步";
+    [renderWorkspace, renderModels, renderClaude][step]();
   }
 
   // ── 01 workspace ──
@@ -59,21 +74,24 @@ const Setup = (() => {
     const w = st.workspace;
     const now = $("#wzWsNow");
     now.innerHTML = "";
-    if (w.demo) now.append(el("p", "note", "目前使用示範資料。選擇你自己的私人工作區："));
-    else {
-      now.append(el("code", "", w.root));
-      const ul = el("ul", "checks");
-      ul.append(check(w.has_profile, "profile/"));
-      ul.append(check(!!w.git?.repo, w.git?.repo ? `Git（${w.git.branch}）` : "不是 Git repository"));
-      if (w.git?.repo) ul.append(check(!!w.git.remote, w.git.remote ? `遠端 ${w.git.remote}` : "沒有遠端，無法跨裝置同步"));
-      ul.append(check(true, `${w.papers} 篇論文`));
-      now.append(ul);
+    mode ??= w.demo ? "new" : "open";
+    const ul = el("ul", "checks");
+    if (!w.demo) {
+      ul.append(check(w.has_profile, w.root));
+      ul.append(check(true, w.git?.remote ? `同步 ${w.git.remote}` : "只存在這台電腦"));
     }
+    now.append(ul);
     document.querySelectorAll("#wzWsMode button").forEach((b) => {
       b.setAttribute("aria-pressed", String(b.dataset.v === mode));
       b.onclick = () => { mode = b.dataset.v; renderWorkspace(); };
     });
     document.querySelectorAll('.step[data-step="0"] .form').forEach((f) => (f.hidden = f.dataset.mode !== mode));
+    // Example paths in this OS's style.
+    const home = isWin ? "C:\\Users\\you\\Documents" : "/Users/you/Documents";
+    $("#wzNewPath").placeholder = `${home}${isWin ? "\\" : "/"}my-paper-workspace`;
+    $("#wzCloneParent").placeholder = home;
+    $("#wzOpenPath").placeholder = `${home}${isWin ? "\\" : "/"}my-paper-workspace`;
+    renderGit();
   }
 
   async function visibility(input, out) {
@@ -100,16 +118,22 @@ const Setup = (() => {
     finally { btn.disabled = false; }
   }
 
-  // ── 02 git ──
+  // Git: only shown when the workspace syncs, or is about to.
+  let editAuthor = false;
   function renderGit() {
     const g = st.git_tool;
-    const now = $("#wzGitNow");
-    now.innerHTML = "";
-    const ul = el("ul", "checks");
-    ul.append(check(g.installed, g.installed ? g.version : "找不到 Git：請先安裝 Git（Windows 請裝 Git for Windows），再重新開啟 App"));
-    if (g.installed) ul.append(check(!!(g.name && g.email), g.name && g.email ? `作者 ${g.name} <${g.email}>` : "尚未設定作者"));
-    now.append(ul);
-    $('.step[data-step="1"] .form').hidden = !g.installed;
+    const syncing = !!st.workspace.git?.remote || mode === "clone" || (mode === "new" && !!$("#wzNewRemote").value.trim());
+    $("#wzGitBox").hidden = !syncing;
+    if (!syncing) return;
+    const ul = $("#wzGitNow");
+    ul.innerHTML = "";
+    ul.append(check(g.installed, g.installed ? g.version : "需要安裝 Git"));
+    if (g.installed) {
+      const li = check(!!(g.name && g.email), g.name && g.email ? `作者 ${g.name} <${g.email}>` : "設定 commit 作者");
+      if (g.name && g.email) li.lastChild.append(iconButton("pen", "修改作者", () => { editAuthor = true; renderGit(); }));
+      ul.append(li);
+    }
+    $("#wzGitForm").hidden = !g.installed || (!!(g.name && g.email) && !editAuthor);
     if (!$("#wzGitName").value) $("#wzGitName").value = g.name ?? "";
     if (!$("#wzGitEmail").value) $("#wzGitEmail").value = g.email ?? "";
   }
@@ -141,7 +165,7 @@ const Setup = (() => {
       li.onclick = () => { selected = m.id; $("#wzPlan").innerHTML = ""; renderModels(); };
       ul.append(li);
     });
-    if (!st.models.some((m) => m.fits)) ul.append(el("li", "note", "這台電腦的記憶體不足以執行本機模型，建議只使用 Claude。"));
+    if (!st.models.some((m) => m.fits)) ul.append(el("li", "note", "記憶體不足：改用 Claude"));
     renderModelActions();
   }
 
@@ -221,59 +245,178 @@ const Setup = (() => {
         await refresh();
         if (phase === "ready") {
           flash("本機模型已啟用");
-          try { state.engine = await api("/api/engine"); renderStatus(); } catch (e) { console.warn(e); }
+          loadEngines();
         }
       }
     }, 1000);
   }
 
   // ── 04 claude ──
+  // Which connection the Claude step is showing; switching tabs to a ready
+  // one also switches what Claude uses.
+  let via = null;
+  let ccPoll = null;
+  const isWin = /Win/i.test(navigator.platform);
+  const INSTALL = isWin ? "irm https://claude.ai/install.ps1 | iex" : "curl -fsSL https://claude.ai/install.sh | bash";
+
+  async function refreshCC() {
+    await loadEngines(true);
+    if (step === 2) renderClaude();
+  }
+
   function renderClaude() {
-    const c = st.claude;
-    const now = $("#wzClaudeNow");
-    now.innerHTML = "";
-    const ul = el("ul", "checks");
-    ul.append(check(c.configured, c.configured ? (c.source === "env" ? "已連接（環境變數）" : "已連接（系統金鑰圈）") : "尚未設定，可略過"));
-    now.append(ul);
+    const e = state.engines;
+    if (!e) return;
+    via ??= claudeVia();
+    document.querySelectorAll("#wzVia button").forEach((b) => {
+      const v = b.dataset.v;
+      b.setAttribute("aria-pressed", String(v === via));
+      b.querySelector(".st")?.remove();
+      if (e[v]?.configured) b.append(el("span", "st", v === claudeVia() ? " ● 使用中" : " ✓"));
+      b.onclick = () => {
+        via = v;
+        if (e[v]?.configured) { store.set("pc.claudeVia", v); renderEngineSwitch(); renderStatus(); }
+        $("#wzTestOut").textContent = "";
+        renderClaude();
+      };
+    });
+    document.querySelectorAll(".step[data-step=\"2\"] .via").forEach((d) => (d.hidden = d.dataset.via !== via));
+
+    // subscription
+    const cc = e.subscription.status;
+    const ul = $("#ccChecks");
+    ul.innerHTML = "";
+    ul.append(check(cc.installed, cc.installed ? `Claude Code ${cc.version ?? ""}` : "安裝 Claude Code"));
+    if (cc.installed) {
+      const text = cc.ready ? `已登入 ${cc.account ?? ""}`
+        : cc.logged_in ? "改用 claude.ai 帳號登入" : "登入 claude.ai 帳號";
+      ul.append(check(cc.ready, text));
+    }
+    $("#ccInstall").hidden = cc.installed;
+    $("#ccCmd").textContent = INSTALL;
+    $("#ccLogin").hidden = cc.ready;
+    $("#ccLogin").disabled = !cc.installed || !!ccPoll;
+    $("#ccLogin").textContent = ccPoll ? "等待瀏覽器登入…" : "用瀏覽器登入";
+
+    // api
+    const c = { configured: e.api.configured, masked: e.api.masked, source: e.api.source };
+    const editing = !c.configured || editingKey;
+    $("#wzKeyShow").hidden = editing;
+    $("#wzKeyEnter").hidden = !editing;
+    $("#wzClaudeSave").hidden = !editing;
+    $("#wzKeyCancel").hidden = !c.configured;
+    $("#wzKeyMasked").textContent = c.masked ?? "";
+    $("#wzClaudeRemove").hidden = c.source !== "keychain";
+    $("#wzKeyEdit").setAttribute("aria-label", c.source === "env" ? "更換 key（目前來自環境變數）" : "更換 key");
+
     const sel = $("#wzClaudeModel");
-    if (!sel.options.length) c.models.forEach((m) => sel.append(new Option(m, m)));
-    sel.value = c.model;
+    if (!sel.options.length) e.models.forEach((m) => sel.append(new Option(modelName(m), m)));
+    sel.value = e.model;
+    $("#wzTest").disabled = !e[via]?.configured;
+  }
+
+  async function loginCC() {
+    try { await api("/api/claude-code/login", {}); }
+    catch (err) { flash(err.message, 8000); return; }
+    flash("已在瀏覽器開啟 claude.ai 登入頁，完成後回到這裡", 6000);
+    let tries = 0;
+    clearInterval(ccPoll);
+    ccPoll = setInterval(async () => {
+      tries++;
+      await loadEngines(true);
+      const ok = state.engines?.subscription.configured;
+      if (ok || tries > 100) {
+        clearInterval(ccPoll); ccPoll = null;
+        if (ok) { store.set("pc.claudeVia", "subscription"); flash("已用 claude.ai 帳號登入"); renderEngineSwitch(); renderStatus(); }
+      }
+      if (step === 2) renderClaude();
+    }, 3000);
+    renderClaude();
+  }
+
+  async function testClaude() {
+    const out = $("#wzTestOut");
+    const btn = $("#wzTest");
+    btn.disabled = true; out.className = "note"; out.textContent = "測試中…";
+    let r;
+    try { r = await api("/api/engines/test", { engine: via }); } catch (err) { r = { ok: false, error: err.message }; }
+    btn.disabled = false;
+    out.className = r.ok ? "note ok" : "note bad";
+    out.textContent = r.ok ? `✓ 連線成功（${(r.ms / 1000).toFixed(1)} 秒，${via === "subscription" ? "走訂閱" : "走 API 計費"}）` : `✕ ${r.error}`;
+  }
+
+  let editingKey = false;
+  function editKey(on) {
+    if (on && st?.claude.source === "env") {
+      flash("這把 key 來自環境變數，App 改不到。請改用 scripts/dev.sh --reset-key 更換", 8000);
+      return;
+    }
+    editingKey = on;
+    $("#wzClaudeKey").value = "";
+    renderClaude();
+    if (on) $("#wzClaudeKey").focus();
+  }
+
+  async function saveClaude(body) {
+    let ok = true;
+    try { state.claude = await api("/api/settings/claude", body); }
+    catch (e) { ok = false; flash(e.message, 8000); }
+    if (ok) flash(body.key === "" ? "已移除 Claude key" : body.key ? "已儲存 Claude key" : "已切換模型");
+    if (ok && body.key) store.set("pc.claudeVia", "api");
+    await loadEngines();
+    if (ok && body.key !== undefined) { editingKey = false; $("#wzClaudeKey").value = ""; }
+    refresh();
   }
 
   function wire() {
     $("#wzPrev").onclick = () => { if (step > 0) { step--; render(); } };
-    $("#wzNext").onclick = () => { if (step < 3) { step++; render(); } else close(); };
-    $("#wzSkip").onclick = () => { if (step < 3) { step++; render(); } else close(); };
-    $("#sheetSetup [data-close]").onclick = close;
-    $("#openSetup").onclick = () => open(0);
+    $("#wzNext").onclick = () => { if (step < LAST) { step++; render(); } else close(); };
+    $("#wzSkip").onclick = () => { if (step < LAST) { step++; render(); } else close(); };
+    const dlg = $("#dlgSetup");
+    dlg.addEventListener("close", onClosed);
+    // A click on the backdrop lands on the <dialog> itself, not its content.
+    dlg.addEventListener("click", (e) => { if (e.target === dlg) close(); });
+    $("#wzClose").onclick = close;
 
     $("#wzOpen").onclick = (e) => workspaceAction("/api/setup/workspace", { path: $("#wzOpenPath").value, init: $("#wzOpenInit").checked }, e.target);
     $("#wzClone").onclick = (e) => workspaceAction("/api/setup/clone", { url: $("#wzCloneUrl").value, parent: $("#wzCloneParent").value }, e.target);
     $("#wzNew").onclick = (e) => workspaceAction("/api/setup/new", { path: $("#wzNewPath").value, remote: $("#wzNewRemote").value || null }, e.target);
+    $("#wzGhNew").onclick = async () => {
+      try { await api("/api/open/github-new-repo", {}); flash("建好後把網址貼回來"); }
+      catch (e) { flash(e.message, 6000); }
+      $("#wzNewRemote").focus();
+    };
+    $("#wzNewRemote").oninput = renderGit;
     $("#wzCloneUrl").onchange = () => visibility($("#wzCloneUrl"), $("#wzCloneVis"));
     $("#wzNewRemote").onchange = () => visibility($("#wzNewRemote"), $("#wzNewVis"));
 
     $("#wzGitSave").onclick = async () => {
-      try { await api("/api/setup/git-identity", { name: $("#wzGitName").value, email: $("#wzGitEmail").value }); flash("已設定 Git 作者"); }
+      try { await api("/api/setup/git-identity", { name: $("#wzGitName").value, email: $("#wzGitEmail").value }); flash("已設定作者"); editAuthor = false; }
       catch (e) { flash(e.message, 6000); }
       refresh();
     };
-    $("#wzClaudeSave").onclick = async () => {
-      const body = { model: $("#wzClaudeModel").value };
+    $("#wzClaudeGetKey").onclick = () => openKeysPage("#wzClaudeKey");
+    $("#wzClaudeRemove").onclick = () => { if (confirm("從這台電腦的金鑰圈移除 Claude key？")) saveClaude({ key: "" }); };
+    $("#wzKeyEdit").onclick = () => editKey(true);
+    $("#wzKeyCancel").onclick = () => editKey(false);
+    $("#wzClaudeModel").onchange = () => saveClaude({ model: $("#wzClaudeModel").value });
+    $("#wzClaudeSave").onclick = () => {
       const k = $("#wzClaudeKey").value.trim();
-      if (k) body.key = k;
-      try { state.claude = await api("/api/settings/claude", body); flash("已更新 Claude 設定"); } catch (e) { flash(e.message, 6000); }
-      $("#wzClaudeKey").value = "";
-      renderStatus();
-      refresh();
+      if (!k) { $("#wzClaudeKey").focus(); return; }
+      saveClaude({ key: k, model: $("#wzClaudeModel").value });
     };
+    $("#ccRecheck").onclick = refreshCC;
+    $("#ccLogin").onclick = loginCC;
+    $("#ccCopy").onclick = () => { navigator.clipboard?.writeText(INSTALL); flash("已複製安裝指令"); };
+    $("#wzTest").onclick = testClaude;
+    $("#wzClaudeKey").onkeydown = (e) => { if (e.key === "Enter") $("#wzClaudeSave").click(); };
   }
 
   /** First run: no workspace configured yet. */
   async function maybeOpen() {
     try {
       const s = await api("/api/setup/status");
-      if (s.first_run && !store.get("pc.setupSeen", false)) { st = s; open(0); }
+      if (s.first_run && !store.get("pc.setupSeen", false)) open(0);
     } catch {}
   }
 

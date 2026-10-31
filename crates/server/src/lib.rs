@@ -12,6 +12,7 @@
 //! so a personal profile path is never committed by accident.
 
 pub mod claude;
+pub mod claude_code;
 pub mod engine;
 pub mod git;
 pub mod models;
@@ -24,10 +25,11 @@ use axum::{
     Router,
 };
 use claude::Claude;
-use engine::{Engine, EngineConfig};
+use engine::{Engine, EngineConfig, EngineStatus};
 use pc_core::compose::{self, ComposeRequest, Draft, DraftCheck, Prompt};
 use pc_core::paper::{self, Section};
 use pc_core::table::{self, Table};
+use pc_core::softcheck::{self, SoftResult};
 use pc_core::{check_text, decompose, search, Hit, Issue, Profile, Query};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -71,6 +73,10 @@ struct AppState {
     models: Arc<models::Manager>,
     claude: RwLock<Claude>,
     paths: Paths,
+    /// Soft-check results by prompt hash: an unchanged paragraph is not re-sent.
+    soft_cache: tokio::sync::Mutex<std::collections::HashMap<u64, Vec<SoftResult>>>,
+    /// Claude Code CLI status (installed / logged in), refreshed at most once a minute.
+    cc: claude_code::Cache,
 }
 
 type Shared = Arc<AppState>;
@@ -301,6 +307,63 @@ async fn reload(State(s): State<Shared>) -> impl IntoResponse {
     StatusCode::NO_CONTENT
 }
 
+#[derive(Deserialize)]
+struct SoftCheckBody {
+    /// One paragraph.
+    text: String,
+    section: Option<String>,
+    before: Option<String>,
+    after: Option<String>,
+    #[serde(default)]
+    engine: Option<EngineChoice>,
+}
+
+/// Judge one paragraph against the soft rules in rules.csv with a model.
+async fn soft_check(State(s): State<Shared>, Json(b): Json<SoftCheckBody>) -> impl IntoResponse {
+    let (prompt, rules) = {
+        let l = s.loaded.read().await;
+        let Some(p) = &l.profile else { return bad("profile not loaded") };
+        let rules = softcheck::soft_rules(p, b.section.as_deref());
+        let prompt = softcheck::build_prompt(&rules, &b.text, b.section.as_deref(), b.before.as_deref(), b.after.as_deref());
+        (prompt, rules.into_iter().cloned().collect::<Vec<_>>())
+    };
+    if rules.is_empty() || b.text.trim().is_empty() {
+        return Json(serde_json::json!({ "results": [], "cached": false })).into_response();
+    }
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&prompt.system, &prompt.user).hash(&mut h);
+        h.finish()
+    };
+    if let Some(hit) = s.soft_cache.lock().await.get(&key) {
+        return Json(serde_json::json!({ "results": hit, "cached": true })).into_response();
+    }
+    if !has_writing_engine(&s, b.engine).await {
+        return Json(serde_json::json!({ "results": [], "error": "no engine" })).into_response();
+    }
+    let refs: Vec<&pc_core::Rule> = rules.iter().collect();
+    // One retry when the reply cannot be read.
+    let mut extra = None;
+    let mut last = String::new();
+    for _ in 0..2 {
+        match writing_complete(&s, b.engine, &prompt, extra).await {
+            Ok(reply) => match softcheck::parse_reply(&reply, &refs, &b.text) {
+                Ok(results) => {
+                    s.soft_cache.lock().await.insert(key, results.clone());
+                    return Json(serde_json::json!({ "results": results, "cached": false })).into_response();
+                }
+                Err(e) => {
+                    last = e;
+                    extra = Some("Reply with the JSON object only, one result per listed rule.");
+                }
+            },
+            Err(e) => return Json(serde_json::json!({ "results": [], "error": e })).into_response(),
+        }
+    }
+    Json(serde_json::json!({ "results": [], "error": format!("unreadable reply: {last}") })).into_response()
+}
+
 async fn phrases(State(s): State<Shared>, AxQuery(q): AxQuery<Query>) -> impl IntoResponse {
     let l = s.loaded.read().await;
     match &l.profile {
@@ -324,7 +387,129 @@ async fn check(State(s): State<Shared>, Json(b): Json<CheckBody>) -> impl IntoRe
 }
 
 async fn engine_status(State(s): State<Shared>) -> impl IntoResponse {
+    if !s.engine.read().await.configured() {
+        let c = s.claude.read().await;
+        if c.status().configured {
+            return Json(EngineStatus { connected: true, name: format!("Claude · {}", c.model) });
+        }
+    }
     Json(s.engine.read().await.status().await)
+}
+
+/// Both writing engines, for the engine switch in the compose panel.
+#[derive(Deserialize, Default)]
+struct Fresh {
+    #[serde(default)]
+    fresh: Option<u8>,
+}
+
+/// The three writing engines, for the engine switch and the setup dialog.
+/// `?fresh=1` re-reads the Claude Code login instead of the cached answer.
+async fn engines_status(State(s): State<Shared>, AxQuery(f): AxQuery<Fresh>) -> impl IntoResponse {
+    let local = s.engine.read().await;
+    let c = s.claude.read().await.status();
+    let cc = s.cc.get(f.fresh.is_some()).await;
+    Json(serde_json::json!({
+        "local": { "configured": local.configured(), "status": local.status().await },
+        "subscription": { "configured": cc.ready, "status": cc },
+        "api": { "configured": c.configured, "masked": c.masked, "source": c.source },
+        "model": c.model,
+        "models": c.models,
+    }))
+}
+
+async fn claude_code_login(State(s): State<Shared>) -> impl IntoResponse {
+    match claude_code::start_login() {
+        Ok(()) => {
+            s.cc.get(true).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => bad(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct TestBody {
+    engine: EngineChoice,
+}
+
+/// Round-trip a tiny prompt through one engine, to prove the binding works.
+async fn test_engine(State(s): State<Shared>, Json(b): Json<TestBody>) -> impl IntoResponse {
+    let prompt = Prompt { system: "Reply with exactly: OK".into(), user: "ping".into() };
+    let t = std::time::Instant::now();
+    let r = writing_complete(&s, Some(b.engine), &prompt, None).await;
+    let ms = t.elapsed().as_millis() as u64;
+    match r {
+        Ok(reply) => Json(serde_json::json!({ "ok": true, "ms": ms, "reply": reply.trim() })),
+        Err(e) => Json(serde_json::json!({ "ok": false, "ms": ms, "error": if e == "no engine" { "尚未完成設定".to_string() } else { e } })),
+    }
+}
+
+/// Which engine writes. None = automatic: the local model when configured,
+/// otherwise Claude. Both get the same retrieved patterns and prompt, so the
+/// voice rules hold whichever runs.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum EngineChoice {
+    Local,
+    /// Claude Code CLI on the claude.ai subscription.
+    Subscription,
+    /// Anthropic API with a key (billed per use).
+    #[serde(alias = "claude")]
+    Api,
+}
+
+async fn engine_ready(s: &Shared, e: EngineChoice) -> bool {
+    match e {
+        EngineChoice::Local => s.engine.read().await.configured(),
+        EngineChoice::Subscription => s.cc.get(false).await.ready,
+        EngineChoice::Api => s.claude.read().await.status().configured,
+    }
+}
+
+/// The engine that runs: the chosen one, or the first ready of local,
+/// subscription, API.
+async fn resolve_engine(s: &Shared, choice: Option<EngineChoice>) -> Option<EngineChoice> {
+    match choice {
+        Some(e) => engine_ready(s, e).await.then_some(e),
+        None => {
+            for e in [EngineChoice::Local, EngineChoice::Subscription, EngineChoice::Api] {
+                if engine_ready(s, e).await {
+                    return Some(e);
+                }
+            }
+            None
+        }
+    }
+}
+
+async fn writing_complete(s: &Shared, choice: Option<EngineChoice>, prompt: &Prompt, extra: Option<&str>) -> Result<String, String> {
+    match resolve_engine(s, choice).await.ok_or("no engine")? {
+        EngineChoice::Local => s.engine.read().await.complete(prompt, extra).await,
+        EngineChoice::Subscription => {
+            let model = s.claude.read().await.model.clone();
+            claude_code::complete(prompt, &model, extra).await
+        }
+        EngineChoice::Api => {
+            let c = s.claude.read().await;
+            match extra {
+                Some(e) => c.complete(&Prompt { system: prompt.system.clone(), user: format!("{}\n{e}", prompt.user) }).await,
+                None => c.complete(prompt).await,
+            }
+        }
+    }
+}
+
+async fn has_writing_engine(s: &Shared, choice: Option<EngineChoice>) -> bool {
+    resolve_engine(s, choice).await.is_some()
+}
+
+#[derive(Deserialize)]
+struct ComposeBody {
+    #[serde(flatten)]
+    req: ComposeRequest,
+    #[serde(default)]
+    engine: Option<EngineChoice>,
 }
 
 #[derive(Serialize)]
@@ -339,7 +524,8 @@ struct ComposeReply {
     prompt: Prompt,
 }
 
-async fn compose_paragraph(State(s): State<Shared>, Json(req): Json<ComposeRequest>) -> impl IntoResponse {
+async fn compose_paragraph(State(s): State<Shared>, Json(body): Json<ComposeBody>) -> impl IntoResponse {
+    let (req, choice) = (body.req, body.engine);
     let (points, refs, prompt) = {
         let l = s.loaded.read().await;
         let Some(p) = &l.profile else {
@@ -353,7 +539,7 @@ async fn compose_paragraph(State(s): State<Shared>, Json(req): Json<ComposeReque
     if points.is_empty() {
         return (StatusCode::BAD_REQUEST, "no points given").into_response();
     }
-    if !s.engine.read().await.configured() {
+    if !has_writing_engine(&s, choice).await {
         return Json(ComposeReply {
             references: refs,
             draft: None,
@@ -368,7 +554,7 @@ async fn compose_paragraph(State(s): State<Shared>, Json(req): Json<ComposeReque
     let mut feedback: Option<String> = None;
     let mut last_err = None;
     for _ in 0..2 {
-        let reply = match s.engine.read().await.complete(&prompt, feedback.as_deref()).await {
+        let reply = match writing_complete(&s, choice, &prompt, feedback.as_deref()).await {
             Ok(r) => r,
             Err(e) => {
                 last_err = Some(e);
@@ -412,6 +598,21 @@ async fn paper_dir(s: &Shared, name: &str) -> Result<PathBuf, axum::response::Re
         return Err((StatusCode::NOT_FOUND, "paper not found").into_response());
     }
     Ok(dir)
+}
+
+#[derive(Deserialize)]
+struct NewPaper {
+    name: String,
+}
+
+async fn create_paper(State(s): State<Shared>, Json(b): Json<NewPaper>) -> impl IntoResponse {
+    let Some(ws) = s.loaded.read().await.workspace.clone() else {
+        return bad("no workspace");
+    };
+    match paper::create_paper(&ws.join("papers"), &b.name) {
+        Ok(_) => Json(serde_json::json!({ "name": b.name.trim() })).into_response(),
+        Err(e) => bad(&e),
+    }
 }
 
 async fn get_paper(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
@@ -480,6 +681,24 @@ async fn claude_status(State(s): State<Shared>) -> impl IntoResponse {
     Json(s.claude.read().await.status())
 }
 
+/// Pages the UI may open in the system browser. Fixed URLs only, so the
+/// local API cannot be used to open arbitrary links.
+const PAGES: &[(&str, &str)] = &[
+    ("anthropic-keys", claude::KEYS_PAGE),
+    // GitHub pre-fills the form; the user still confirms on the page.
+    ("github-new-repo", "https://github.com/new?name=my-paper-workspace&visibility=private"),
+];
+
+async fn open_page(AxPath(name): AxPath<String>) -> impl IntoResponse {
+    let Some((_, url)) = PAGES.iter().find(|(n, _)| *n == name) else {
+        return (StatusCode::NOT_FOUND, "unknown page").into_response();
+    };
+    match claude::open_in_browser(url) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct ClaudeSettings {
     /// Some("") removes the stored key; None leaves it.
@@ -506,6 +725,8 @@ async fn claude_settings(State(s): State<Shared>, Json(b): Json<ClaudeSettings>)
 struct DecomposeBody {
     text: String,
     section: Option<String>,
+    #[serde(default)]
+    engine: Option<EngineChoice>,
 }
 
 async fn decompose_text(State(s): State<Shared>, Json(b): Json<DecomposeBody>) -> impl IntoResponse {
@@ -517,19 +738,9 @@ async fn decompose_text(State(s): State<Shared>, Json(b): Json<DecomposeBody>) -
         let Some(p) = &l.profile else { return bad("profile not loaded") };
         decompose::build_prompt(p, &b.text, b.section.as_deref())
     };
-    // Claude when configured, otherwise the local engine.
-    let reply = {
-        let c = s.claude.read().await;
-        if c.status().configured {
-            c.complete(&prompt).await
-        } else if s.engine.read().await.configured() {
-            s.engine.read().await.complete(&prompt, None).await
-        } else {
-            Err("需要先在設定中連接 Claude 或本機模型".into())
-        }
-    };
-    let reply = match reply {
+    let reply = match writing_complete(&s, b.engine, &prompt, None).await {
         Ok(r) => r,
+        Err(e) if e == "no engine" => return (StatusCode::BAD_GATEWAY, "需要先在「AI 與同步」連接一個引擎".to_string()).into_response(),
         Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
     };
     let l = s.loaded.read().await;
@@ -891,6 +1102,8 @@ pub fn router(paths: Paths) -> Router {
         models: Arc::new(models::Manager::default()),
         claude: RwLock::new(claude),
         paths: paths.clone(),
+        soft_cache: Default::default(),
+        cc: Default::default(),
     });
     models::register(state.models.clone());
     // Start the chosen local model with the app, unless an external engine is set.
@@ -920,10 +1133,12 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/git/status", get(git_status))
         .route("/api/git/pull", post(git_pull))
         .route("/api/git/sync", post(git_sync))
+        .route("/api/papers", post(create_paper))
         .route("/api/papers/{name}", get(get_paper))
         .route("/api/papers/{name}/sections/{file}", put(put_section))
         .route("/api/tables/{name}", get(get_table).put(put_table))
         .route("/api/claude", get(claude_status))
+        .route("/api/open/{page}", post(open_page))
         .route("/api/settings/claude", post(claude_settings))
         .route("/api/decompose", post(decompose_text))
         .route("/api/workspace", get(workspace_info))
@@ -932,7 +1147,11 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/profile/reload", post(reload))
         .route("/api/phrases", get(phrases))
         .route("/api/check", post(check))
+        .route("/api/check/soft", post(soft_check))
         .route("/api/engine", get(engine_status))
+        .route("/api/engines", get(engines_status))
+        .route("/api/engines/test", post(test_engine))
+        .route("/api/claude-code/login", post(claude_code_login))
         .route("/api/compose", post(compose_paragraph))
         .fallback_service(ServeDir::new(paths.ui))
         .with_state(state)

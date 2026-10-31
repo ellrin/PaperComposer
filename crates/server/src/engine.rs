@@ -1,6 +1,6 @@
 //! Model engines. For now: any OpenAI-compatible chat endpoint, which covers
 //! llama.cpp server, Ollama and LM Studio running Gemma locally or on a home
-//! machine. Claude plugs in here later behind the same `complete` call.
+//! machine. Without one, writing falls back to Claude (see `writing_complete`).
 
 use pc_core::compose::Prompt;
 use serde::{Deserialize, Serialize};

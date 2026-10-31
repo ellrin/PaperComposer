@@ -1,5 +1,6 @@
 // PaperComposer UI.
-// Top bar: global actions (file, template, database, settings).
+// Top bar: view switcher (write / database / templates), paper picker, and on
+// the right AI & sync, appearance and light/dark.
 // Left: navigator of sections and paragraphs. Centre: the whole paper.
 // Right: one-shot writing box and checks for the current paragraph.
 
@@ -28,9 +29,10 @@ const state = {
   cur: { s: 0, p: 0 },
   profile: null,
   ruleText: {},
-  engine: null,
+  engines: null,     // { local: {configured, status}, claude: {configured, model} }
   claude: null,
   composed: null,
+  soft: {},           // soft-check results by section + paragraph text
   db: { name: "phrases.csv", tables: {}, dirty: new Set(), issues: {} },
 };
 
@@ -55,7 +57,7 @@ function applyTheme() {
   root.classList.toggle("dim-paper", store.get("pc.dim", false));
   document.querySelectorAll(".theme[data-theme]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.theme === t)));
   $("#dimPaper").setAttribute("aria-pressed", String(store.get("pc.dim", false)));
-  $("#mode").textContent = m === "dark" ? "☾" : "☀";
+  $("#mode").replaceChildren(icon(m === "dark" ? "moon" : "sun"));
 }
 
 // ── Paper ──────────────────────────────────────────────
@@ -228,28 +230,86 @@ function edit(p, si, pi) {
 // ── Right panel ────────────────────────────────────────
 function renderSide() { renderFindings(); syncCompose(); }
 
+// Check panel: the selected paragraph is brought in; hard rules show at
+// once, soft rules (rules.csv, type soft) run on the model only when asked.
+const softKey = () => {
+  const sec = curSection();
+  return sec ? `${roleOf(sec.title)}\n${sec.paragraphs[state.cur.p] ?? ""}` : "";
+};
+
 function renderFindings() {
   const ul = $("#findings");
   ul.innerHTML = "";
+  const head = $("#chkHead");
+  head.innerHTML = "";
+  const box = $("#softBox");
+  box.innerHTML = "";
+  const sec = curSection();
   const r = state.reports[state.cur.s]?.[state.cur.p];
-  if (!r) { ul.append(el("li", "empty", "—")); return; }
-  if (!r.findings.length && !r.pending.length) {
-    const li = el("li"); li.append(el("span", "status"), el("span", "", "通過")); ul.append(li); return;
+  if (!r) { ul.append(el("li", "empty", "選一個段落")); return; }
+  head.append(el("span", "acc", `${sec.title} · ${pad(state.cur.p + 1)}`), el("span", "", `${r.sentences} 句 · ${r.words} 字`));
+
+  // hard rules
+  if (!r.findings.length) { const li = el("li"); li.append(el("span", "status"), el("span", "m", "格式規則都通過")); ul.append(li); }
+  r.findings.forEach((f) => ul.append(findingItem(f.severity, f.message, null, f.rule, f.sentence)));
+
+  // soft rules
+  if (!r.pending.length) return;
+  const done = state.soft[softKey()];
+  const list = el("ul", "findings soft");
+  if (done?.results) {
+    done.results.forEach((x) => list.append(findingItem(x.pass ? "ok" : x.severity, x.message, x.reason, x.rule, x.sentence)));
+  } else {
+    r.pending.forEach((id) => list.append(findingItem("info", state.ruleText[id] ?? id, null, id, null, true)));
   }
-  r.findings.forEach((f) => {
-    const li = el("li");
-    const body = el("span");
-    body.append(el("span", "m", f.message), el("span", "rid", f.rule + (f.sentence != null ? ` · s${f.sentence + 1}` : "")));
-    li.append(el("span", `status ${f.severity}`), body);
-    ul.append(li);
-  });
-  r.pending.forEach((id) => {
-    const li = el("li", "pending");
-    const body = el("span");
-    body.append(el("span", "m", state.ruleText[id] ?? id), el("span", "rid", id));
-    li.append(el("span", "status info"), body);
-    ul.append(li);
-  });
+  const bar = el("div", "soft-bar");
+  const go = el("button", "primary small", done?.busy ? "檢查中…" : done?.results ? "重新檢查" : `檢查 ${r.pending.length} 條規則`);
+  go.disabled = !!done?.busy;
+  go.onclick = () => softCheck(done?.results ? true : false);
+  bar.append(el("span", done?.error ? "note bad" : "note", done?.error ? (done.error === "no engine" ? "先連接引擎" : `失敗：${done.error}`) : "軟規則"), go);
+  box.append(bar, list);
+}
+
+function findingItem(status, message, reason, rule, sentence, pending) {
+  const li = el("li", pending ? "pending" : "");
+  const body = el("span");
+  body.append(el("span", "m", message));
+  if (sentence != null) body.append(el("span", "where", `第 ${sentence + 1} 句`));
+  body.append(el("span", "rid", rule));
+  if (reason) body.append(el("span", "why", reason));
+  li.append(el("span", `status ${status === "ok" ? "" : status}`), body);
+  if (sentence != null) { li.classList.add("go"); li.onclick = () => pointAt(state.cur.s, state.cur.p, sentence); }
+  return li;
+}
+
+/** Flash one sentence of a paragraph in the paper. */
+function pointAt(si, pi, i) {
+  const s = paraEl(si, pi)?.querySelectorAll(".s")[i];
+  if (!s) return;
+  s.scrollIntoView({ block: "center", behavior: "smooth" });
+  s.classList.remove("blink"); void s.offsetWidth; s.classList.add("blink");
+}
+
+async function softCheck(again) {
+  const key = softKey();
+  const sec = curSection();
+  if (!key || !sec) return;
+  const list = sec.paragraphs;
+  const p = state.cur.p;
+  state.soft[key] = { busy: true };
+  renderFindings();
+  let res;
+  try {
+    res = await api("/api/check/soft", {
+      text: list[p], section: roleOf(sec.title),
+      before: list[p - 1] ?? null, after: list[p + 1] ?? null,
+      engine: chosenEngine(),
+    });
+  } catch (e) { res = { error: e.message }; }
+  state.soft[key] = res.error ? { error: res.error } : { results: res.results };
+  if (!again && res.cached) flash("沿用上次的檢查結果");
+  // Only redraw if the user is still on this paragraph.
+  if (softKey() === key) renderFindings();
 }
 
 function syncCompose() {
@@ -260,6 +320,107 @@ function syncCompose() {
 }
 
 const seg = (id) => $(`#${id} [aria-pressed="true"]`)?.dataset.v;
+
+// ── Writing engine switch ──────────────────────────────
+// Two engines in the UI: local, and Claude. Claude connects one of two ways,
+// chosen by the user: their claude.ai login through Claude Code
+// ("subscription") or an API key ("api"). The server is told which.
+const VIA = { subscription: "訂閱", api: "API" };
+
+/** How Claude connects: the saved choice, else whichever is set up. */
+function claudeVia() {
+  const e = state.engines;
+  const want = store.get("pc.claudeVia", null);
+  if (want && (!e || e[want]?.configured)) return want;
+  if (e?.subscription.configured) return "subscription";
+  if (e?.api.configured) return "api";
+  return want ?? "subscription";
+}
+const claudeReady = () => !!state.engines?.[claudeVia()]?.configured;
+
+/** The engine sent to the server: "local", "subscription", "api" or null. */
+function chosenEngine() {
+  const e = state.engines;
+  if (!e) return null;
+  const want = store.get("pc.engine", null);
+  if (want === "local" && e.local.configured) return "local";
+  if (want === "claude" && claudeReady()) return claudeVia();
+  return e.local.configured ? "local" : claudeReady() ? claudeVia() : null;
+}
+
+async function loadEngines(fresh = false) {
+  try { state.engines = await api(`/api/engines${fresh ? "?fresh=1" : ""}`); } catch { state.engines = null; }
+  renderEngineSwitch();
+  renderStatus();
+}
+
+/** claude-sonnet-5-5 → Sonnet 5.5 */
+const modelName = (id) => {
+  const [, family = id, ...ver] = String(id).split("-");
+  return `${family[0].toUpperCase()}${family.slice(1)} ${ver.join(".")}`.trim();
+};
+
+/** Claude menu: the model, and how Claude connects. */
+function toggleModelMenu(btn) {
+  const m = $("#modelMenu");
+  if (!m.hidden) { m.hidden = true; return; }
+  const e = state.engines;
+  m.innerHTML = "";
+  m.append(el("div", "hm-title", "模型"));
+  e.models.forEach((id) => {
+    const b = el("button", "", modelName(id));
+    b.setAttribute("aria-current", String(id === e.model));
+    b.onclick = async () => {
+      m.hidden = true;
+      try { await api("/api/settings/claude", { model: id }); flash(`已改用 ${modelName(id)}`); }
+      catch (err) { flash(err.message, 6000); }
+      loadEngines();
+    };
+    m.append(b);
+  });
+  m.append(el("div", "sep"), el("div", "hm-title", "連線方式"));
+  [["subscription", "登入帳號（訂閱）"], ["api", "API key"]].forEach(([via, label]) => {
+    const ready = !!e[via]?.configured;
+    const b = el("button", ready ? "" : "off", ready ? label : `${label}・未設定`);
+    b.setAttribute("aria-current", String(via === claudeVia() && ready));
+    b.onclick = () => {
+      m.hidden = true;
+      if (!ready) { setTimeout(() => Setup.open("claude", via)); return; }
+      store.set("pc.claudeVia", via);
+      store.set("pc.engine", "claude");
+      flash(`Claude 改用${label}`);
+      renderEngineSwitch();
+      renderStatus();
+    };
+    m.append(b);
+  });
+  m.hidden = false;
+  const r = btn.getBoundingClientRect();
+  m.style.top = `${r.bottom + 4}px`;
+  m.style.left = `${Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8))}px`;
+}
+
+function renderEngineSwitch() {
+  const pick = chosenEngine();
+  const e = state.engines;
+  $('#cEngine [data-v="claude"] .lbl').textContent = claudeReady() ? `Claude ${modelName(e.model)}` : "Claude";
+  document.querySelectorAll("#cEngine button").forEach((b) => {
+    const v = b.dataset.v;
+    const ready = v === "local" ? !!e?.local.configured : claudeReady();
+    b.classList.toggle("off", !ready);
+    b.setAttribute("aria-pressed", String(v === "local" ? pick === "local" : pick != null && pick !== "local"));
+    b.title = ready ? "" : v === "local" ? "尚未部署本機模型，點此設定" : "尚未連接 Claude，點此設定";
+    // Unavailable: take the user to where it gets set up.
+    b.onclick = () => {
+      if (!ready) { Setup.open(v === "local" ? "model" : "claude"); return; }
+      store.set("pc.engine", v);
+      renderEngineSwitch();
+      renderStatus();
+      // Claude: also offer its models and connection.
+      if (v === "claude") toggleModelMenu(b); else $("#modelMenu").hidden = true;
+    };
+  });
+}
 
 function slotted(template) {
   const frag = document.createDocumentFragment();
@@ -274,7 +435,6 @@ async function compose() {
   const points = $("#points").value.trim();
   if (!points) { $("#points").focus(); return; }
   const list = curSection()?.paragraphs ?? [];
-  const ctx = seg("cContext") === "on";
   const body = {
     points,
     section: $("#cSection").value,
@@ -282,8 +442,10 @@ async function compose() {
     min_words: Number($("#cMin").value) || 120,
     max_words: Number($("#cMax").value) || 180,
     language: seg("cLang"),
-    before: ctx ? list[state.cur.p] ?? null : null,
-    after: ctx ? list[state.cur.p + 1] ?? null : null,
+    engine: chosenEngine(),
+    // Neighbours, so the paragraph links into its place in the text.
+    before: list[state.cur.p] ?? null,
+    after: list[state.cur.p + 1] ?? null,
   };
   const btn = $("#generate");
   btn.disabled = true;
@@ -321,17 +483,22 @@ function renderResult() {
     }
     const text = r.draft.sentences.map((s) => s.text).join("\n");
     const acts = el("div", "actions");
-    [["插入", () => placeDraft(text, "insert")], ["取代", () => placeDraft(text, "replace")], ["重來", compose],
-     ["複製", () => navigator.clipboard?.writeText(text.replace(/\n/g, " "))]]
-      .forEach(([label, fn]) => { const b = el("button", "", label); b.onclick = fn; acts.append(b); });
+    acts.append(
+      iconButton("insert", "插入到目前段落之後", () => placeDraft(text, "insert")),
+      iconButton("replace", "取代目前段落", () => placeDraft(text, "replace")),
+      iconButton("redo", "重新生成", compose),
+      iconButton("copy", "複製", () => navigator.clipboard?.writeText(text.replace(/\n/g, " "))),
+    );
     wrap.append(acts);
   } else {
-    wrap.append(el("p", "note", r.error === "no engine" ? "未連接模型：以下是會交給模型的參考句型。" : `生成失敗：${r.error}`));
+    if (r.error === "no engine") {
+      const go = el("button", "ghost", "連接引擎");
+      go.onclick = () => Setup.open("claude");
+      wrap.append(go);
+    } else wrap.append(el("p", "note bad", `生成失敗：${r.error}`));
     if (r.prompt) {
       const acts = el("div", "actions");
-      const b = el("button", "", "複製提示詞");
-      b.onclick = () => navigator.clipboard?.writeText(`${r.prompt.system}\n\n${r.prompt.user}`);
-      acts.append(b);
+      acts.append(iconButton("copy", "複製提示詞", () => navigator.clipboard?.writeText(`${r.prompt.system}\n\n${r.prompt.user}`)));
       wrap.append(acts);
     }
   }
@@ -368,12 +535,15 @@ function renderStatus() {
   const bar = $("#statusbar");
   bar.innerHTML = "";
   bar.append(el("span", "accent", sec ? `${pad(state.cur.s + 1)} / ${sec.title}` : "—"), el("span", "", `${paras} 段 · ${words} 字`));
-  const eng = el("span"); const dot = el("span", "dot");
-  dot.style.background = state.engine?.connected ? "var(--ok)" : "var(--faint)";
-  eng.append(dot, state.engine?.name ?? "未連接模型"); bar.append(eng);
-  const cl = el("span"); const cdot = el("span", "dot");
-  cdot.style.background = state.claude?.configured ? "var(--ok)" : "var(--faint)";
-  cl.append(cdot, "Claude"); bar.append(cl);
+  const e = state.engines, pick = chosenEngine();
+  const eng = el("button", "sync"); const dot = el("span", "dot");
+  const [ok, name] = pick === "local" ? [e.local.status.connected, e.local.status.name]
+    : pick ? [true, `Claude ${VIA[pick]} · ${modelName(e.model)}`] : [false, "連接引擎"];
+  dot.style.background = ok ? "var(--ok)" : "var(--faint)";
+  eng.append(dot, name);
+  eng.title = "寫作引擎（右側可切換）";
+  eng.onclick = () => Setup.open(pick && pick !== "local" ? "claude" : "model");
+  bar.append(eng);
   bar.append(gitIndicator());
 }
 
@@ -384,7 +554,7 @@ function gitIndicator() {
   const dot = el("span", "dot");
   let label, color = "var(--faint)";
   if (state.syncing) { label = "同步中"; color = "var(--accent)"; }
-  else if (!g?.repo) { label = state.workspace?.demo ? "示範（不同步）" : "無 Git"; }
+  else if (!g?.repo) { label = "設定同步"; color = "var(--warn)"; }
   else if (g.changed.length) { label = `${g.changed.length} 項未同步`; color = "var(--warn)"; }
   else if (g.ahead) { label = `${g.ahead} 個 commit 未推送`; color = "var(--warn)"; }
   else if (!g.remote) { label = "已 commit（無遠端）"; color = "var(--ok)"; }
@@ -392,8 +562,8 @@ function gitIndicator() {
   dot.style.background = color;
   b.append(dot, label);
   b.title = g?.repo ? `${g.branch ?? ""} → ${g.remote ?? "沒有遠端"}\nCtrl+S 同步` : "工作區不是 Git repository";
-  b.disabled = !g?.repo || state.syncing;
-  b.onclick = syncNow;
+  b.disabled = state.syncing;
+  b.onclick = g?.repo ? syncNow : () => Setup.open("workspace");
   return b;
 }
 
@@ -428,48 +598,150 @@ async function syncNow() {
 let flashTimer;
 function flash(msg, ms = 3000) {
   let t = $("#flash");
-  if (!t) { t = el("div", "tip flash"); t.id = "flash"; document.body.append(t); }
+  if (!t) { t = el("div", "tip flash"); t.id = "flash"; }
+  // An open modal dialog sits in the top layer; anything outside it is hidden behind.
+  ($("dialog[open]") ?? document.body).append(t);
   t.textContent = msg;
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => t.remove(), ms);
 }
 
-// ── Sheets ─────────────────────────────────────────────
-const SHEETS = { actTemplate: "sheetTemplate", actDb: "sheetDb", actSettings: "sheetSettings" };
+// ── Views ──────────────────────────────────────────────
+// "editor" or the id of a sheet. Exactly one view is active at a time.
+let view = "editor";
 
-function openSheet(id) {
-  $("#sheetSetup").hidden = true;
-  Object.entries(SHEETS).forEach(([btn, sheet]) => {
-    const on = sheet === id;
-    $(`#${sheet}`).hidden = !on;
-    $(`#${btn}`).setAttribute("aria-pressed", String(on));
+function setView(v) {
+  if (v === view) return;
+  if (view === "sheetDb" && state.db.dirty.size && !confirm("資料庫有未儲存的修改，仍要離開？")) return;
+  view = v;
+  document.querySelectorAll(".sheet").forEach((s) => (s.hidden = s.id !== v));
+  document.querySelectorAll(".views [data-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === v)));
+  $("#actFile").hidden = v !== "editor";
+  if (v === "sheetDb") openDb();
+  if (v === "sheetTemplate") renderTemplates();
+}
+
+// ── Hover menus on the top-bar icons ───────────────────
+// Clicking an icon does its main thing; hovering offers the finer entries.
+const MENUS = {
+  sheetDb: () => [
+    ...TABLES.map(([name, label]) => [label, () => openDbTab(name), view === "sheetDb" && state.db.name === name]),
+    "-",
+    ["拆解好句子…", () => { openDbTab(state.db.name); setTimeout(() => $("#dcText").focus(), 50); }],
+  ],
+  sheetTemplate: () => [
+    ["出版社模板", () => setView("sheetTemplate"), view === "sheetTemplate"],
+    ...(state.workspace?.publishers ?? []).map((p) => [p, () => setView("sheetTemplate")]),
+  ],
+  ai: () => [
+    ["工作區與同步", () => Setup.open("workspace")],
+    ["本機模型", () => Setup.open("model")],
+    ["Claude", () => Setup.open("claude")],
+    "-",
+    ["立即同步　Ctrl+S", syncNow],
+  ],
+};
+
+function openDbTab(name) {
+  state.db.name = name;
+  if (view === "sheetDb") showTable(name); else setView("sheetDb");
+}
+
+const hm = { btn: null, timer: null };
+function openHoverMenu(btn) {
+  const m = $("#hoverMenu");
+  m.innerHTML = "";
+  m.append(el("div", "hm-title", btn.getAttribute("aria-label")));
+  MENUS[btn.dataset.menu]().forEach((it) => {
+    if (it === "-") { m.append(el("div", "sep")); return; }
+    const [label, fn, current] = it;
+    const b = el("button", "", label);
+    b.setAttribute("aria-current", String(!!current));
+    // Run after this click has finished bubbling: the document click handler
+    // closes open menus, and would close the one this item just opened.
+    b.onclick = () => { closeHoverMenu(true); setTimeout(fn); };
+    m.append(b);
   });
-  if (id === "sheetDb") openDb();
-  if (id === "sheetSettings") renderSettings();
-  if (id === "sheetTemplate") renderTemplates();
+  m.hidden = false;
+  const r = btn.getBoundingClientRect();
+  m.style.top = `${r.bottom + 4}px`;
+  m.style.left = `${Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8))}px`;
+  hm.btn = btn;
 }
-function closeSheets() {
-  if (state.db.dirty.size && !$("#sheetDb").hidden && !confirm("資料庫有未儲存的修改，仍要關閉？")) return;
-  openSheet(null);
+function closeHoverMenu(now) {
+  clearTimeout(hm.timer);
+  const go = () => { $("#hoverMenu").hidden = true; hm.btn = null; };
+  if (now) go(); else hm.timer = setTimeout(go, 220);
+}
+function wireHoverMenus() {
+  document.querySelectorAll("[data-menu]").forEach((b) => {
+    b.addEventListener("mouseenter", () => {
+      clearTimeout(hm.timer);
+      if (hm.btn === b) return;
+      hm.timer = setTimeout(() => openHoverMenu(b), hm.btn ? 0 : 120);
+    });
+    b.addEventListener("mouseleave", () => closeHoverMenu());
+    b.addEventListener("click", () => closeHoverMenu(true));
+  });
+  const m = $("#hoverMenu");
+  m.addEventListener("mouseenter", () => clearTimeout(hm.timer));
+  m.addEventListener("mouseleave", () => closeHoverMenu());
 }
 
-// file menu
+// appearance popover
+function toggleLook(force) {
+  const p = $("#lookPop");
+  const show = force ?? p.hidden;
+  p.hidden = !show;
+  $("#actLook").setAttribute("aria-expanded", String(show));
+  if (!show) return;
+  const r = $("#actLook").getBoundingClientRect();
+  p.style.top = `${r.bottom + 6}px`;
+  p.style.right = `${innerWidth - r.right}px`;
+}
+
+// paper menu: switch papers, or name a new blank one at the bottom
 function toggleFileMenu() {
   const m = $("#fileMenu");
   if (!m.hidden) { m.hidden = true; return; }
   m.innerHTML = "";
   const papers = state.workspace?.papers ?? [];
-  if (!papers.length) m.append(el("div", "empty", "工作區的 papers/ 沒有論文"));
+  if (!papers.length) m.append(el("div", "empty", "還沒有論文"));
   papers.forEach((name) => {
     const b = el("button", "", name);
+    b.prepend(icon("file"));
     b.setAttribute("aria-current", String(name === state.paper?.name));
     b.onclick = () => { m.hidden = true; openPaper(name); };
     m.append(b);
   });
+  const row = el("div", "new-row");
+  const input = el("input");
+  input.placeholder = "新論文名稱，Enter 建立";
+  input.onkeydown = (e) => { if (e.key === "Enter") createPaper(input); if (e.key === "Escape") m.hidden = true; };
+  row.append(icon("plus"), input);
+  m.append(row);
   const r = $("#actFile").getBoundingClientRect();
   m.style.top = `${r.bottom + 4}px`;
   m.style.left = `${r.left}px`;
   m.hidden = false;
+}
+
+async function createPaper(input) {
+  const name = input.value.trim();
+  if (!name) return;
+  input.disabled = true;
+  try {
+    await api("/api/papers", { name });
+    state.workspace = await api("/api/workspace");
+    $("#fileMenu").hidden = true;
+    await openPaper(name);
+    refreshGit();
+    flash(`已建立 ${name}`);
+  } catch (e) {
+    flash(e.message, 6000);
+    input.disabled = false;
+    input.focus();
+  }
 }
 
 // templates
@@ -481,28 +753,11 @@ function renderTemplates() {
   pubs.forEach((p) => ul.append(el("li", "", p)));
 }
 
-// settings
-async function renderSettings() {
-  try { state.claude = await api("/api/claude"); } catch {}
-  const c = state.claude;
-  const st = $("#claudeState");
-  st.className = c?.configured ? "ok" : "";
-  st.textContent = c?.configured ? (c.source === "env" ? "已連接（環境變數）" : "已連接（系統金鑰圈）") : "未設定";
-  const sel = $("#claudeModel");
-  if (c && !sel.options.length) c.models.forEach((m) => sel.append(new Option(m, m)));
-  if (c) sel.value = c.model;
-  const e = state.engine;
-  $("#engineState").textContent = e?.connected ? `已連接 ${e.name}` : "未連接";
-  $("#engineState").className = e?.connected ? "ok" : "";
-  $("#wsPath").textContent = (state.workspace?.root ?? "—") + (state.workspace?.demo ? "（示範）" : "");
-}
-
-async function saveClaude(body) {
-  try { state.claude = await api("/api/settings/claude", body); flash("已更新 Claude 設定"); }
-  catch (e) { flash(e.message); }
-  $("#claudeKey").value = "";
-  renderSettings();
-  renderStatus();
+/** Open the Console key page in the system browser, then wait in the key field. */
+async function openKeysPage(input) {
+  try { await api("/api/open/anthropic-keys", {}); flash("建立 key 後貼回這裡"); }
+  catch (e) { flash(e.message, 6000); }
+  $(input).focus();
 }
 
 // ── Database editor ────────────────────────────────────
@@ -569,9 +824,8 @@ function rowEl(t, row, ri) {
     tr.append(td);
   });
   const td = el("td");
-  const del = el("button", "del", "✕");
-  del.title = "刪除這一列";
-  del.onclick = () => { t.rows.splice(ri, 1); markDirty(); showTable(state.db.name); };
+  const del = iconButton("trash", "刪除這一列", () => { t.rows.splice(ri, 1); markDirty(); showTable(state.db.name); });
+  del.classList.add("del");
   td.append(del);
   tr.append(td);
   return tr;
@@ -640,7 +894,7 @@ async function decompose() {
   btn.disabled = true; btn.textContent = "拆解中";
   out.innerHTML = "";
   try {
-    const p = await api("/api/decompose", { text, section: $("#dcSection").value });
+    const p = await api("/api/decompose", { text, section: $("#dcSection").value, engine: chosenEngine() });
     renderProposals(p);
   } catch (e) {
     out.append(el("p", "note", e.message));
@@ -683,7 +937,7 @@ function renderProposals(p) {
       n++;
     });
     out.innerHTML = "";
-    out.append(el("p", "note", `已加入 ${n} 筆，按「儲存」寫入資料庫。`));
+    out.append(el("p", "note", `已加入 ${n} 筆，記得儲存`));
     showTable(state.db.name);
   };
   out.append(add);
@@ -710,7 +964,7 @@ function wire() {
       closeTip();
       if (was) return;
       tip = el("div", "tip", h.dataset.tip);
-      document.body.append(tip);
+      (h.closest("dialog") ?? document.body).append(tip);
       const r = h.getBoundingClientRect();
       tip.style.top = `${r.bottom + 6}px`;
       tip.style.left = `${Math.max(8, Math.min(r.left - 100, innerWidth - 260))}px`;
@@ -720,26 +974,28 @@ function wire() {
   document.addEventListener("click", (e) => {
     closeTip();
     if (!e.target.closest("#fileMenu, #actFile")) $("#fileMenu").hidden = true;
+    if (!e.target.closest("#modelMenu, #cEngine")) $("#modelMenu").hidden = true;
+    if (!e.target.closest("#lookPop, #actLook")) toggleLook(false);
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") { closeTip(); $("#fileMenu").hidden = true; }
     // Ctrl+S: save database edits, then commit and push the workspace.
-    if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); syncNow(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); syncNow(); return; }
+    if (e.key !== "Escape" || $("#dlgSetup").open) return;
+    // Esc peels one layer: tip / menu / popover first, then back to the editor.
+    const layered = !!document.querySelector(".tip:not(.flash)") || !$("#fileMenu").hidden || !$("#modelMenu").hidden || !$("#lookPop").hidden;
+    closeTip(); $("#fileMenu").hidden = true; $("#modelMenu").hidden = true; toggleLook(false); closeHoverMenu(true);
+    if (!layered && view !== "editor" && !e.target.closest("input, textarea, select")) setView("editor");
   });
 
+  wireHoverMenus();
   $("#actFile").onclick = toggleFileMenu;
-  Object.entries(SHEETS).forEach(([btn, sheet]) => {
-    $(`#${btn}`).onclick = () => ($(`#${sheet}`).hidden ? openSheet(sheet) : closeSheets());
-  });
-  document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = closeSheets));
+  document.querySelectorAll(".views [data-view]").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
+  $("#actLook").onclick = () => toggleLook();
+  $("#actConnect").onclick = () => Setup.open();
 
   document.querySelectorAll(".theme[data-theme]").forEach((b) => { b.onclick = () => { store.set("pc.theme", b.dataset.theme); applyTheme(); }; });
   $("#mode").onclick = () => { store.set("pc.mode", document.documentElement.dataset.mode === "dark" ? "light" : "dark"); applyTheme(); };
   $("#dimPaper").onclick = () => { store.set("pc.dim", !store.get("pc.dim", false)); applyTheme(); };
-
-  $("#claudeSave").onclick = () => { const k = $("#claudeKey").value.trim(); if (k) saveClaude({ key: k }); };
-  $("#claudeRemove").onclick = () => saveClaude({ key: "" });
-  $("#claudeModel").onchange = () => saveClaude({ model: $("#claudeModel").value });
 
   document.querySelectorAll(".seg").forEach((s) => {
     s.querySelectorAll("button").forEach((b) => {
@@ -763,8 +1019,11 @@ function wire() {
 }
 
 async function boot() {
+  paintIcons();
   applyTheme();
   wire();
+  view = null;
+  setView("editor");
   try { state.workspace = await api("/api/workspace"); } catch {}
   // Bring in work from other devices before showing anything.
   try {
@@ -777,13 +1036,20 @@ async function boot() {
     state.ruleText = await api("/api/profile/rules");
     const chips = $("#profileChips");
     chips.innerHTML = "";
-    const name = el("span", "chip", state.profile.error ? "資料庫讀取失敗" : state.profile.name);
-    name.title = state.profile.error ?? state.profile.path;
-    chips.append(name);
-    if (state.profile.demo) { const d = el("span", "chip warn", "示範資料"); d.title = "尚未指定你的私人工作區"; chips.append(d); }
+    // Only what to do next: no workspace yet → connect one.
+    if (state.profile.demo) {
+      const go = el("button", "chip warn", "連接工作區");
+      go.onclick = () => Setup.open("workspace");
+      chips.append(go);
+    } else {
+      const name = el("span", "chip", state.profile.error ? "資料庫讀取失敗" : state.profile.name);
+      name.title = state.profile.error ?? state.profile.path;
+      chips.append(name);
+    }
     if (state.profile.issues.length) {
-      const i = el("span", "chip warn", `${state.profile.issues.length} 筆格式問題`);
+      const i = el("button", "chip warn", `修正 ${state.profile.issues.length} 筆格式`);
       i.title = state.profile.issues.map((x) => `${x.file}:${x.line} ${x.column ?? ""} ${x.message}`).join("\n");
+      i.onclick = () => setView("sheetDb");
       chips.append(i);
     }
     state.profile.functions.forEach((f) => $("#cFunction").append(new Option(f.replace(/_/g, " "), f)));
@@ -794,14 +1060,12 @@ async function boot() {
   const last = store.get("pc.paper", null);
   if (papers.length) await openPaper(papers.includes(last) ? last : papers[0]);
   else render();
-  try { state.engine = await api("/api/engine"); } catch {}
-  try { state.claude = await api("/api/claude"); } catch {}
-  renderStatus();
+  await loadEngines();
   // setup.js loads after this file; by now it is defined.
   Setup.wire();
   await Setup.maybeOpen();
   // A local model may still be starting in the background.
-  setTimeout(async () => { try { state.engine = await api("/api/engine"); renderStatus(); } catch {} }, 15000);
+  setTimeout(loadEngines, 15000);
 }
 
 boot();
