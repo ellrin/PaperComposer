@@ -29,6 +29,7 @@ use engine::{Engine, EngineConfig, EngineStatus};
 use pc_core::compose::{self, ComposeRequest, Draft, DraftCheck, Prompt};
 use pc_core::paper::{self, Section};
 use pc_core::table::{self, Table};
+use pc_core::bib;
 use pc_core::softcheck::{self, SoftResult};
 use pc_core::{check_text, decompose, search, Hit, Issue, Profile, Query};
 use serde::{Deserialize, Serialize};
@@ -90,6 +91,8 @@ struct Config {
     engine: Option<EngineConfig>,
     claude: Option<ClaudeConfig>,
     model: Option<ModelConfig>,
+    /// This machine's folder of reference PDFs (never synced).
+    pdf_dir: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Default)]
@@ -696,6 +699,224 @@ async fn paper_packages(State(s): State<Shared>, AxPath(name): AxPath<String>, J
     }
 }
 
+// ── References ─────────────────────────────────────────
+
+fn pdf_dir() -> Option<PathBuf> {
+    std::env::var("PAPERCOMPOSER_PDF_DIR").ok().map(PathBuf::from).or_else(|| read_config().pdf_dir).filter(|p| p.is_dir())
+}
+
+async fn refs_root(s: &Shared) -> Result<PathBuf, axum::response::Response> {
+    s.loaded.read().await.workspace.clone().ok_or_else(|| bad("no workspace"))
+}
+
+fn load_library(ws: &Path) -> (Vec<bib::Entry>, Vec<bib::Note>) {
+    let src = std::fs::read_to_string(ws.join("refs/library.bib")).unwrap_or_default();
+    (bib::parse(&src).0, bib::read_notes(&ws.join("refs/notes.csv")))
+}
+
+fn save_library(ws: &Path, entries: &[bib::Entry], notes: &[bib::Note]) -> Result<(), String> {
+    std::fs::create_dir_all(ws.join("refs")).map_err(|e| e.to_string())?;
+    paper::write_atomic(&ws.join("refs/library.bib"), &bib::write(entries)).map_err(|e| e.to_string())?;
+    bib::write_notes(&ws.join("refs/notes.csv"), notes).map_err(|e| e.to_string())
+}
+
+/// Every reference with its notes and whether this machine has its PDF.
+async fn list_refs(State(s): State<Shared>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let (entries, notes) = load_library(&ws);
+    let dir = pdf_dir();
+    let rows: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            let n = notes.iter().find(|n| n.key == e.key).cloned().unwrap_or_else(|| bib::Note { key: e.key.clone(), doi: e.get("doi").unwrap_or("").into(), ..Default::default() });
+            let found = dir.as_deref().and_then(|d| bib::find_pdf(d, &n)).is_some();
+            serde_json::json!({
+                "key": e.key, "kind": e.kind, "title": e.title(), "authors": e.authors_short(),
+                "year": e.year(), "venue": e.venue(), "doi": n.doi, "summary": n.summary,
+                "one_liner": n.one_liner, "tags": n.tags, "pdf": n.pdf, "pdf_found": found,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "refs": rows, "pdf_dir": dir })).into_response()
+}
+
+async fn ref_tags(State(s): State<Shared>) -> impl IntoResponse {
+    let path = s.loaded.read().await.path.join("tags.csv");
+    Json(bib::read_tags(&path))
+}
+
+#[derive(Deserialize)]
+struct ImportBib {
+    bibtex: String,
+}
+
+/// Add BibTeX entries to the library; existing keys or DOIs are skipped.
+async fn import_refs(State(s): State<Shared>, Json(b): Json<ImportBib>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let (mut entries, mut notes) = load_library(&ws);
+    let (new, errors) = bib::parse(&b.bibtex);
+    let (mut added, mut skipped) = (Vec::new(), Vec::new());
+    for e in new {
+        let doi = e.get("doi").unwrap_or("").to_lowercase();
+        let dup = entries.iter().any(|x| x.key == e.key || (!doi.is_empty() && x.get("doi").is_some_and(|d| d.to_lowercase() == doi)));
+        if dup {
+            skipped.push(e.key.clone());
+            continue;
+        }
+        notes.push(bib::Note { key: e.key.clone(), doi: e.get("doi").unwrap_or("").into(), ..Default::default() });
+        added.push(e.key.clone());
+        entries.push(e);
+    }
+    if let Err(e) = save_library(&ws, &entries, &notes) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    Json(serde_json::json!({ "added": added, "skipped": skipped, "errors": errors })).into_response()
+}
+
+#[derive(Deserialize)]
+struct NoteBody {
+    summary: Option<String>,
+    one_liner: Option<String>,
+    tags: Option<Vec<String>>,
+    pdf: Option<String>,
+}
+
+async fn update_ref(State(s): State<Shared>, AxPath(key): AxPath<String>, Json(b): Json<NoteBody>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let (entries, mut notes) = load_library(&ws);
+    let Some(e) = entries.iter().find(|e| e.key == key) else { return (StatusCode::NOT_FOUND, "no such reference").into_response() };
+    if !notes.iter().any(|n| n.key == key) {
+        notes.push(bib::Note { key: key.clone(), doi: e.get("doi").unwrap_or("").into(), ..Default::default() });
+    }
+    let n = notes.iter_mut().find(|n| n.key == key).unwrap();
+    if let Some(v) = b.summary { n.summary = v; }
+    if let Some(v) = b.one_liner { n.one_liner = v; }
+    if let Some(v) = b.tags { n.tags = v; }
+    if let Some(v) = b.pdf { n.pdf = v; }
+    match save_library(&ws, &entries, &notes) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Open a reference's PDF with the system viewer (only files in the PDF folder).
+async fn open_ref_pdf(State(s): State<Shared>, AxPath(key): AxPath<String>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let (_, notes) = load_library(&ws);
+    let Some(dir) = pdf_dir() else { return bad("還沒設定 PDF 資料夾") };
+    let note = notes.into_iter().find(|n| n.key == key).unwrap_or(bib::Note { key: key.clone(), ..Default::default() });
+    match bib::find_pdf(&dir, &note) {
+        Some(p) => match claude::open_in_browser(&p.to_string_lossy()) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        },
+        None => (StatusCode::NOT_FOUND, "本機找不到這篇的 PDF").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PdfDir {
+    path: String,
+}
+
+async fn set_pdf_dir(Json(b): Json<PdfDir>) -> impl IntoResponse {
+    let p = PathBuf::from(b.path.trim());
+    if !p.is_dir() {
+        return bad("資料夾不存在");
+    }
+    match write_config_root("pdf_dir", &p.to_string_lossy()) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Citations used in one paper, and what each is used for there.
+async fn paper_citations(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
+    let dir = match paper_dir(&s, &name).await { Ok(d) => d, Err(r) => return r };
+    let tex: String = std::iter::once(dir.join("main.tex"))
+        .chain(paper::section_files(&dir).into_iter().map(|f| dir.join("sections").join(f)))
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Json(serde_json::json!({ "cited": bib::cited_keys(&tex), "purposes": bib::read_citations(&dir.join("citations.csv")) })).into_response()
+}
+
+#[derive(Deserialize)]
+struct Purpose {
+    key: String,
+    purpose: String,
+}
+
+async fn set_purpose(State(s): State<Shared>, AxPath(name): AxPath<String>, Json(b): Json<Purpose>) -> impl IntoResponse {
+    let dir = match paper_dir(&s, &name).await { Ok(d) => d, Err(r) => return r };
+    let path = dir.join("citations.csv");
+    let mut c = bib::read_citations(&path);
+    if b.purpose.trim().is_empty() { c.remove(&b.key); } else { c.insert(b.key, b.purpose.trim().to_string()); }
+    match bib::write_citations(&path, &c) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+const BIB_MARK: &str = "% Generated by PaperComposer from refs/library.bib: edit the library, not this file.";
+
+/// Write the paper's .bib with exactly the references it cites. A .bib that
+/// PaperComposer did not write is first merged into the library, so nothing
+/// in it is lost.
+async fn paper_bib(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let dir = match paper_dir(&s, &name).await { Ok(d) => d, Err(r) => return r };
+    let main = std::fs::read_to_string(dir.join("main.tex")).unwrap_or_default();
+    let bib_name = bib_file_name(&main);
+    let bib_path = dir.join(&bib_name);
+    let (mut entries, mut notes) = load_library(&ws);
+    let mut absorbed = 0;
+    if let Ok(old) = std::fs::read_to_string(&bib_path) {
+        if !old.starts_with(BIB_MARK) {
+            for e in bib::parse(&old).0 {
+                if !entries.iter().any(|x| x.key == e.key) {
+                    notes.push(bib::Note { key: e.key.clone(), doi: e.get("doi").unwrap_or("").into(), ..Default::default() });
+                    entries.push(e);
+                    absorbed += 1;
+                }
+            }
+            if absorbed > 0 {
+                if let Err(e) = save_library(&ws, &entries, &notes) {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+                }
+            }
+        }
+    }
+    let tex: String = paper::section_files(&dir)
+        .into_iter()
+        .filter_map(|f| std::fs::read_to_string(dir.join("sections").join(f)).ok())
+        .chain(std::iter::once(main))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (body, missing) = bib::paper_bib(&entries, &bib::cited_keys(&tex));
+    if let Err(e) = paper::write_atomic(&bib_path, &format!("{BIB_MARK}\n\n{body}")) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    Json(serde_json::json!({ "file": bib_name, "missing": missing, "absorbed": absorbed })).into_response()
+}
+
+/// The .bib main.tex uses: \bibliography{x} or \addbibresource{x.bib}.
+fn bib_file_name(main: &str) -> String {
+    for cmd in ["\\bibliography{", "\\addbibresource{"] {
+        for line in main.lines() {
+            let code = line.split('%').next().unwrap_or("");
+            if let Some(i) = code.find(cmd) {
+                let rest = &code[i + cmd.len()..];
+                if let Some(name) = rest.split(['}', ',']).next().map(str::trim).filter(|n| !n.is_empty()) {
+                    let name = name.rsplit('/').next().unwrap_or(name);
+                    return if name.ends_with(".bib") { name.to_string() } else { format!("{name}.bib") };
+                }
+            }
+        }
+    }
+    "refs.bib".into()
+}
+
 async fn get_paper(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
     match paper_dir(&s, &name).await {
         Ok(dir) => Json(serde_json::json!({
@@ -1219,6 +1440,14 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/papers", post(create_paper))
         .route("/api/papers/{name}", get(get_paper))
         .route("/api/papers/{name}/packages", post(paper_packages))
+        .route("/api/papers/{name}/citations", get(paper_citations).post(set_purpose))
+        .route("/api/papers/{name}/bib", post(paper_bib))
+        .route("/api/refs", get(list_refs))
+        .route("/api/refs/tags", get(ref_tags))
+        .route("/api/refs/import", post(import_refs))
+        .route("/api/refs/{key}", put(update_ref))
+        .route("/api/refs/{key}/open", post(open_ref_pdf))
+        .route("/api/settings/pdf-dir", post(set_pdf_dir))
         .route("/api/papers/{name}/sections/{file}", put(put_section))
         .route("/api/tables/{name}", get(get_table).put(put_table))
         .route("/api/claude", get(claude_status))

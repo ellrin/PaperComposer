@@ -357,6 +357,14 @@ pub fn create_paper_from_template(papers: &Path, name: &str, template: &Path) ->
     let io = |e: std::io::Error| e.to_string();
     std::fs::create_dir_all(dir.join("sections")).map_err(io)?;
     copy_support(template, &dir).map_err(io)?;
+    // BibTeX only looks next to main.tex: lift styles kept in bst/ (Springer).
+    if let Ok(rd) = std::fs::read_dir(template.join("bst")) {
+        for e in rd.flatten() {
+            if e.path().extension().is_some_and(|x| x == "bst") {
+                std::fs::copy(e.path(), dir.join(e.file_name())).map_err(io)?;
+            }
+        }
+    }
 
     let mut inputs = String::new();
     for (i, (title, tail, body)) in split.sections.iter().enumerate() {

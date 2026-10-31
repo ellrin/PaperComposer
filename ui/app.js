@@ -627,6 +627,7 @@ function setView(v) {
   $("#actFile").hidden = $("#actInsert").hidden = v !== "editor";
   if (v === "sheetDb") openDb();
   if (v === "sheetTemplate") renderTemplates();
+  if (v === "sheetRefs") PCRefs.renderPage();
 }
 
 // ── Hover menus on the top-bar icons ───────────────────
@@ -639,6 +640,7 @@ const MENUS = {
   ],
   insert: () => [
     ["表格…", () => PCTable.insertNew($("#actInsert"))],
+    ["引用…", () => PCRefs.picker($("#actInsert"))],
   ],
   sheetTemplate: () => [
     ["出版社模板", () => setView("sheetTemplate"), view === "sheetTemplate"],

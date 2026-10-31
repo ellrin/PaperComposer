@@ -19,6 +19,7 @@
       <button class="ico" role="tab" data-view="editor" data-icon="pen" aria-label="寫作"></button>
       <button class="ico" role="tab" data-view="sheetDb" data-icon="book" data-menu="sheetDb" aria-label="資料庫"></button>
       <button class="ico" role="tab" data-view="sheetTemplate" data-icon="layout" data-menu="sheetTemplate" aria-label="模板"></button>
+      <button class="ico" role="tab" data-view="sheetRefs" data-icon="library" aria-label="文獻"></button>
     </nav>
     <button class="ico" id="actInsert" data-icon="insert2" data-menu="insert" aria-label="插入"></button>
     <button class="picker" id="actFile" aria-haspopup="true" aria-label="切換或新增論文"><span data-icon="file"></span><span id="paperName">—</span><span data-icon="chevron"></span></button>
@@ -109,6 +110,15 @@
       <button class="help" data-tip="把出版社的 .cls 與範例 .tex 放進工作區的 publishers/〈名稱〉/。匯入與欄位對應即將加入。">?</button>
     </div>
     <ul class="list" id="publishers"></ul>
+  </section>
+
+  <section class="sheet" id="sheetRefs" hidden aria-label="文獻">
+    <div class="sheet-head">
+      <h2>文獻</h2>
+      <span class="count" id="refsCount"></span>
+      <button class="help" data-tip="書目存在私人工作區的 refs/library.bib，一句話、簡介、標籤存在 refs/notes.csv，都會同步。PDF 只存在這台電腦的 PDF 資料夾，不上 git。點標題展開簡介。">?</button>
+    </div>
+    <div class="refs" id="refsBody"></div>
   </section>
 
   <!-- Appearance popover -->
@@ -237,6 +247,7 @@
 <script src="icons.js"></script>
 <script src="tex.js"></script>
 <script src="table.js"></script>
+<script src="refs.js"></script>
 <script src="app.js"></script>
 <script src="setup.js"></script>
 </body>
