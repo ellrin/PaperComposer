@@ -3,11 +3,21 @@
 //! A paragraph is a block separated by one or more blank lines, matching the
 //! one-sentence-per-line, blank-line-between-paragraphs file format.
 
-/// Split text into paragraphs (non-empty blocks between blank lines).
+/// Split text into paragraphs (non-empty blocks between blank lines). A
+/// blank line inside an open environment (`\begin{table}` ... `\end{table}`)
+/// does not split, so tables and equations stay whole.
 pub fn paragraphs(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur: Vec<&str> = Vec::new();
+    let mut depth: i32 = 0;
     for line in text.lines() {
+        let code = line.split('%').next().unwrap_or("");
+        depth += code.matches("\\begin{").count() as i32 - code.matches("\\end{").count() as i32;
+        if depth > 0 && line.trim().is_empty() {
+            cur.push(line);
+            continue;
+        }
+        depth = depth.max(0);
         if line.trim().is_empty() {
             if !cur.is_empty() {
                 out.push(cur.join("\n"));

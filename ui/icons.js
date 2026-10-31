@@ -23,6 +23,22 @@ const ICONS = {
   redo: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
   insert: '<path d="M11 12H3M16 6H3M16 18H3M18 9v6M21 12h-6"/>',
   replace: '<path d="m16 3 4 4-4 4M20 7H4M8 21l-4-4 4-4M4 17h16"/>',
+  // table editing
+  rowAbove: '<rect x="3" y="12" width="18" height="8" rx="1"/><path d="M12 3v6M9 6h6"/>',
+  rowBelow: '<rect x="3" y="4" width="18" height="8" rx="1"/><path d="M12 15v6M9 18h6"/>',
+  colLeft: '<rect x="12" y="3" width="8" height="18" rx="1"/><path d="M3 12h6M6 9v6"/>',
+  colRight: '<rect x="4" y="3" width="8" height="18" rx="1"/><path d="M15 12h6M18 9v6"/>',
+  rowDelete: '<rect x="3" y="7" width="18" height="10" rx="1"/><path d="M9 12h6"/>',
+  colDelete: '<rect x="7" y="3" width="10" height="18" rx="1"/><path d="M9.5 12h5"/>',
+  merge: '<path d="M3 4v16M21 4v16M7 12h10M10 9l-3 3 3 3M14 9l3 3-3 3"/>',
+  split: '<path d="M12 4v16M8 9l-3 3 3 3M16 9l3 3-3 3"/>',
+  lineAbove: '<path d="M3 5h18" stroke-width="2.6"/><rect x="3" y="10" width="18" height="10" rx="1" stroke-dasharray="2 2.5"/>',
+  lineBelow: '<rect x="3" y="4" width="18" height="10" rx="1" stroke-dasharray="2 2.5"/><path d="M3 19h18" stroke-width="2.6"/>',
+  code: '<path d="m16 18 6-6-6-6M8 6l-6 6 6 6"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  tableStyle: '<rect x="3" y="4" width="18" height="16" rx="1.5"/><path d="M3 9h18M3 9.01h18" stroke-width="2.2"/><path d="M3 14h18M10 9v11" stroke-dasharray="1.5 2"/>',
+  insert2: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 8v8M8 12h8"/>',
+  textSize: '<path d="M4 7V5h10v2M9 5v14M7 19h4M14 13v-1h7v1M17.5 12v7M16 19h3"/>',
 };
 
 function icon(name) {

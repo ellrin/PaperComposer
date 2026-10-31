@@ -364,6 +364,59 @@ async fn soft_check(State(s): State<Shared>, Json(b): Json<SoftCheckBody>) -> im
     Json(serde_json::json!({ "results": [], "error": format!("unreadable reply: {last}") })).into_response()
 }
 
+#[derive(Deserialize)]
+struct TableText {
+    text: String,
+}
+
+/// LaTeX table → editable grid, or why it has to be edited as code.
+async fn table_parse(Json(b): Json<TableText>) -> impl IntoResponse {
+    match pc_core::textable::parse(&b.text) {
+        Ok(t) => Json(serde_json::json!({ "table": t })),
+        Err(e) => Json(serde_json::json!({ "error": e })),
+    }
+}
+
+async fn table_styles() -> impl IntoResponse {
+    Json(pc_core::textable::builtin_styles())
+}
+
+#[derive(Deserialize)]
+struct ApplyStyle {
+    table: pc_core::textable::TexTable,
+    style: String,
+}
+
+fn find_style(id: &str) -> Option<pc_core::textable::Style> {
+    pc_core::textable::builtin_styles().into_iter().find(|s| s.id == id)
+}
+
+/// Restyle a table; the reply also lists the packages the style needs.
+async fn table_apply(Json(b): Json<ApplyStyle>) -> impl IntoResponse {
+    let Some(style) = find_style(&b.style) else { return bad("unknown style") };
+    let mut t = b.table;
+    pc_core::textable::apply_style(&mut t, &style);
+    Json(serde_json::json!({ "table": t, "packages": style.packages })).into_response()
+}
+
+#[derive(Deserialize)]
+struct NewTable {
+    style: String,
+}
+
+async fn table_new(Json(b): Json<NewTable>) -> impl IntoResponse {
+    let Some(style) = find_style(&b.style) else { return bad("unknown style") };
+    match pc_core::textable::new_table(&style) {
+        Ok(t) => Json(serde_json::json!({ "text": pc_core::textable::render(&t), "table": t, "packages": style.packages })).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+/// Editable grid → LaTeX.
+async fn table_render(Json(t): Json<pc_core::textable::TexTable>) -> impl IntoResponse {
+    Json(serde_json::json!({ "text": pc_core::textable::render(&t) }))
+}
+
 async fn phrases(State(s): State<Shared>, AxQuery(q): AxQuery<Query>) -> impl IntoResponse {
     let l = s.loaded.read().await;
     match &l.profile {
@@ -619,6 +672,26 @@ async fn create_paper(State(s): State<Shared>, Json(b): Json<NewPaper>) -> impl 
     };
     match made {
         Ok(_) => Json(serde_json::json!({ "name": b.name.trim() })).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Packages {
+    packages: Vec<String>,
+}
+
+/// Load the packages a table style needs in this paper's main.tex.
+async fn paper_packages(State(s): State<Shared>, AxPath(name): AxPath<String>, Json(b): Json<Packages>) -> impl IntoResponse {
+    let dir = match paper_dir(&s, &name).await {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
+    if b.packages.iter().any(|p| !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')) {
+        return bad("invalid package name");
+    }
+    match paper::ensure_packages(&dir, &b.packages) {
+        Ok(added) => Json(serde_json::json!({ "added": added })).into_response(),
         Err(e) => bad(&e),
     }
 }
@@ -1145,6 +1218,7 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/git/sync", post(git_sync))
         .route("/api/papers", post(create_paper))
         .route("/api/papers/{name}", get(get_paper))
+        .route("/api/papers/{name}/packages", post(paper_packages))
         .route("/api/papers/{name}/sections/{file}", put(put_section))
         .route("/api/tables/{name}", get(get_table).put(put_table))
         .route("/api/claude", get(claude_status))
@@ -1157,6 +1231,11 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/profile/reload", post(reload))
         .route("/api/phrases", get(phrases))
         .route("/api/check", post(check))
+        .route("/api/textable/parse", post(table_parse))
+        .route("/api/textable/render", post(table_render))
+        .route("/api/textable/styles", get(table_styles))
+        .route("/api/textable/apply", post(table_apply))
+        .route("/api/textable/new", post(table_new))
         .route("/api/check/soft", post(soft_check))
         .route("/api/engine", get(engine_status))
         .route("/api/engines", get(engines_status))

@@ -305,6 +305,34 @@ pub fn create_paper(papers: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Add `\usepackage{x}` for each package main.tex does not load yet, right
+/// before `\begin{document}`. Returns the packages it added. A package the
+/// class already loads is harmless to load again.
+pub fn ensure_packages(paper: &Path, packages: &[String]) -> Result<Vec<String>, String> {
+    let path = paper.join("main.tex");
+    let main = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let loaded: Vec<String> = main
+        .lines()
+        .map(strip_comment)
+        .filter_map(|l| {
+            let i = l.find("\\usepackage")?;
+            let rest = &l[i + "\\usepackage".len()..];
+            let rest = rest.trim_start();
+            let rest = if rest.starts_with('[') { &rest[rest.find(']')? + 1..] } else { rest };
+            braced(rest.trim_start()).map(|(names, _)| names.to_string())
+        })
+        .flat_map(|names| names.split(',').map(|n| n.trim().to_string()).collect::<Vec<_>>())
+        .collect();
+    let missing: Vec<String> = packages.iter().filter(|p| !loaded.contains(p)).cloned().collect();
+    if missing.is_empty() {
+        return Ok(missing);
+    }
+    let at = main.find("\\begin{document}").ok_or("main.tex has no \\begin{document}")?;
+    let lines: String = missing.iter().map(|p| format!("\\usepackage{{{p}}}\n")).collect();
+    write_atomic(&path, &format!("{}{}{}", &main[..at], lines, &main[at..])).map_err(|e| e.to_string())?;
+    Ok(missing)
+}
+
 /// Files in a publisher folder that are not copied into a paper.
 const TEMPLATE_SKIP: &[&str] = &["sample.tex", "template.toml", "README", "README.md", "user-manual.pdf"];
 
@@ -509,6 +537,19 @@ mod tests {
         assert_eq!(secs[0].paragraphs, vec!["First idea.\nSecond idea.".to_string()], "one sentence per line, comments dropped");
         assert!(create_paper_from_template(&root.join("papers"), "My paper", &tpl).is_err());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn adds_only_missing_packages() {
+        let dir = std::env::temp_dir().join(format!("pc-pkg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.tex"), "\\documentclass{article}\n\\usepackage[T1]{fontenc}\n\\usepackage{amsmath, booktabs}\n% \\usepackage{siunitx}\n\\begin{document}\nx\n\\end{document}\n").unwrap();
+        let pk = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(ensure_packages(&dir, &pk(&["booktabs", "siunitx", "multirow"])).unwrap(), pk(&["siunitx", "multirow"]));
+        let main = std::fs::read_to_string(dir.join("main.tex")).unwrap();
+        assert!(main.contains("\\usepackage{siunitx}\n\\usepackage{multirow}\n\\begin{document}"));
+        assert!(ensure_packages(&dir, &pk(&["booktabs", "siunitx"])).unwrap().is_empty(), "second call adds nothing");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -158,6 +158,14 @@ function renderPaper() {
     h.id = `sec-${si}`;
     paper.append(h);
     sec.paragraphs.forEach((text, pi) => {
+      if (PCTable.isTable(text)) {
+        const p = el("div", "para");
+        p.dataset.s = si;
+        p.dataset.p = pi;
+        paper.append(p);
+        PCTable.mount(p, si, pi, text);
+        return;
+      }
       const block = /\\begin\{(equation|align|gather|multline|eqnarray|displaymath)/.test(text);
       const p = el(block ? "div" : "p", block ? "para display" : "para");
       p.dataset.s = si;
@@ -616,7 +624,7 @@ function setView(v) {
   view = v;
   document.querySelectorAll(".sheet").forEach((s) => (s.hidden = s.id !== v));
   document.querySelectorAll(".views [data-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === v)));
-  $("#actFile").hidden = v !== "editor";
+  $("#actFile").hidden = $("#actInsert").hidden = v !== "editor";
   if (v === "sheetDb") openDb();
   if (v === "sheetTemplate") renderTemplates();
 }
@@ -628,6 +636,9 @@ const MENUS = {
     ...TABLES.map(([name, label]) => [label, () => openDbTab(name), view === "sheetDb" && state.db.name === name]),
     "-",
     ["拆解好句子…", () => { openDbTab(state.db.name); setTimeout(() => $("#dcText").focus(), 50); }],
+  ],
+  insert: () => [
+    ["表格…", () => PCTable.insertNew($("#actInsert"))],
   ],
   sheetTemplate: () => [
     ["出版社模板", () => setView("sheetTemplate"), view === "sheetTemplate"],
@@ -995,6 +1006,7 @@ function wire() {
 
   wireHoverMenus();
   $("#actFile").onclick = toggleFileMenu;
+  $("#actInsert").onclick = () => PCTable.insertNew($("#actInsert"));
   document.querySelectorAll(".views [data-view]").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
   $("#actLook").onclick = () => toggleLook();
   $("#actConnect").onclick = () => Setup.open();

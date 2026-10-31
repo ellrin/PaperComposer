@@ -15,6 +15,7 @@ pub mod profile;
 pub mod retrieve;
 pub mod softcheck;
 pub mod text;
+pub mod textable;
 
 pub use check::{check_text, ParagraphReport, Severity, Finding};
 pub use profile::{Expression, Issue, Manifest, Phrase, Profile, Rule, RuleKind, VocabEntry, SCHEMA_VERSION};

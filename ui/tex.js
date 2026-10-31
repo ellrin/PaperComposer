@@ -114,6 +114,8 @@ window.PCTex = (() => {
           const wrap = (tag, content) => { flush(); const n = document.createElement(tag); n.append(render(content)); frag.append(n); };
           if (arg && ["emph", "textit"].includes(cmd)) { wrap("em", arg[0]); i = arg[1]; continue; }
           if (arg && cmd === "textbf") { wrap("strong", arg[0]); i = arg[1]; continue; }
+          if (arg && cmd === "underline") { wrap("u", arg[0]); i = arg[1]; continue; }
+          if (arg && cmd === "textsc") { wrap("span", arg[0]); i = arg[1]; frag.lastChild.style.fontVariant = "small-caps"; continue; }
           if (arg && ["texttt", "url", "path"].includes(cmd)) { wrap("code", arg[0]); i = arg[1]; continue; }
           if (arg && ["textrm", "textsf", "text", "mbox"].includes(cmd)) { buf += ""; frag.append(render(arg[0])); i = arg[1]; continue; }
           if (arg && /^(cite|citep|citet|citealp|parencite|textcite)$/.test(cmd)) {
