@@ -86,11 +86,14 @@ your-private-repo/
 | macOS | [MacTeX](https://www.tug.org/mactex/)（完整版，約 5 GB，期刊模板用到的套件都有） |
 | Windows | [MiKTeX](https://miktex.org/)（缺套件時會自動下載）或 [TeX Live](https://tug.org/texlive/) |
 
-**用精簡版（BasicTeX）的話**，要自己補套件。IEEE 範本不用補；Springer Nature 範本需要：
+**用精簡版（BasicTeX）的話**，要自己補套件。IEEE 與 MICCAI／LNCS 範本不用補；其他範本與表格樣式需要：
 
 ```sh
 sudo tlmgr update --self
+# Springer Nature
 sudo tlmgr install sttools vruler breakurl apacite appendix wrapfig multirow ncctools rsfs
+# CVPR
+sudo tlmgr install silence enumitem cleveref currfile helvetic times courier mwe
 ```
 
 不想用 sudo，也可以裝在自己的帳號：先 `tlmgr init-usertree`，再把 `sudo tlmgr install` 換成 `tlmgr --usermode install`。
@@ -109,10 +112,14 @@ tlmgr search --global --file /xxx.sty
 |---|---|---|
 | IEEE 期刊、會議 | [CTAN：IEEEtran](https://ctan.org/pkg/ieeetran) | `ieee-journal/`（`bare_jrnl.tex` → `sample.tex`）、`ieee-conference/`（`bare_conf.tex` → `sample.tex`），各附 `IEEEtran.cls`、`IEEEtran.bst`、`IEEEabrv.bib` |
 | Springer Nature | [LaTeX author support](https://www.springernature.com/gp/authors/campaigns/latex-author-support) | `springer-nature/`（`sn-article.tex` → `sample.tex`），附 `sn-jnl.cls`、`bst/` |
+| MICCAI（LNCS） | [CTAN：llncs](https://ctan.org/pkg/llncs)；範例論文請到 Springer 或 Overleaf 取得 | `miccai-lncs/`，附 `llncs.cls`、`splncs04.bst` |
+| CVPR | [CVPR author kit](https://github.com/cvpr-org/author-kit) | `cvpr/`（`main.tex` 與其 `\input` 合併為 `sample.tex`），附 `cvpr.sty`、`ieeenat_fullname.bst` |
 | Elsevier | [CTAN：elsarticle](https://ctan.org/pkg/elsarticle) | `elsevier/` |
 | ACM | [CTAN：acmart](https://ctan.org/pkg/acmart) | `acm/` |
 
-以上 IEEE 與 Springer Nature 範本已在 macOS + BasicTeX（補上述套件與 Ghostscript）實際編譯通過。
+以上 IEEE、Springer Nature、MICCAI／LNCS、CVPR 範本已在 macOS + BasicTeX（補上述套件與 Ghostscript）實際編譯通過。
+
+**表格**：論文裡的表格可以直接在畫面上編輯（選取、雙擊打字、增刪列欄、合併、加減線、字體），並套用 22 種樣式（各期刊官方範例的寫法、通用、數據、版面）。每種樣式都以實際編譯驗證；需要的套件會自動加進 `main.tex`。讀不懂的表格寫法會改用 LaTeX 原始碼編輯，不會被改寫。
 
 ## 連接模型
 
