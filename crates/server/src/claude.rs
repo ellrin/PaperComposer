@@ -44,7 +44,7 @@ fn keychain() -> Option<keyring::Entry> {
 static CACHED: std::sync::Mutex<Option<Option<(String, KeySource)>>> = std::sync::Mutex::new(None);
 
 /// The key and where it came from. Env wins so a shell can override.
-fn key() -> Option<(String, KeySource)> {
+pub(crate) fn key() -> Option<(String, KeySource)> {
     if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
         if !k.trim().is_empty() {
             return Some((k, KeySource::Env));

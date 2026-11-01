@@ -719,7 +719,7 @@ const dbOpen = () => $("#dlgDb").open;
 function openWindow(id) {
   const d = $(`#${id}`);
   if (!d.open) d.showModal();
-  if (id === "dlgTpl") renderTemplates();
+  if (id === "dlgTpl") PCTemplates.open();
   if (id === "dlgPaperRefs") PCRefs.paperPage();
 }
 
@@ -851,20 +851,20 @@ function menuForm(title, tip) {
   return m;
 }
 
-function newPaperForm() {
+async function newPaperForm() {
   const m = menuForm("新論文");
   const input = el("input", "field");
   input.placeholder = "論文名稱";
-  const pubs = state.workspace?.publishers ?? [];
-  const titles = state.workspace?.publisher_titles ?? {};
+  let tpls = [];
+  try { tpls = await api("/api/templates"); } catch {}
   let chosen = store.get("pc.newTemplate", "");
-  if (chosen && !pubs.includes(chosen)) chosen = "";
+  if (chosen && !tpls.some((t) => t.id === chosen)) chosen = "";
   const list = el("div", "tpl-list");
   const label = el("div", "form-label");
   label.append(el("span", "", "模板"));
-  if (!pubs.length) {
+  if (!tpls.length) {
     const h = el("button", "help", "?");
-    h.dataset.tip = "期刊模板放在工作區的 publishers/ 資料夾，一個期刊一個資料夾（含 .cls 與 sample.tex）。";
+    h.dataset.tip = "期刊與研討會的模板在「模板」視窗管理，存在工作區的 publishers/。";
     label.append(h);
   }
   const option = (value, name, sub) => {
@@ -879,15 +879,28 @@ function newPaperForm() {
     };
     list.append(b);
   };
-  option("", "空白");
-  pubs.forEach((p) => option(p, p, titles[p]));
+  // journals, then conferences; the search runs over both
+  const fill = (q = "") => {
+    list.innerHTML = "";
+    if (!q) option("", "空白");
+    const hit = (t) => !q || `${t.name} ${t.short ?? ""} ${t.publisher ?? ""} ${t.id}`.toLowerCase().includes(q.toLowerCase());
+    [["journal", "期刊"], ["conference", "研討會"]].forEach(([k, title]) => {
+      const group = tpls.filter((t) => (t.kind === "conference" ? "conference" : "journal") === k && hit(t)).sort((a, b) => a.name.localeCompare(b.name));
+      if (!group.length) return;
+      list.append(el("div", "tpl-group", title));
+      group.forEach((t) => option(t.id, t.name, [t.short, t.publisher].filter(Boolean).join(" · ")));
+    });
+  };
+  fill();
+  const tq = tpls.length > 4 ? el("input", "field") : null;
+  if (tq) { tq.type = "search"; tq.placeholder = "搜尋期刊或研討會"; tq.oninput = () => fill(tq.value); }
   const go = el("button", "primary small", "建立");
   const create = () => { store.set("pc.newTemplate", chosen); createPaper(input, chosen); };
   go.onclick = create;
   input.onkeydown = (e) => { if (e.key === "Enter") create(); if (e.key === "Escape") m.hidden = true; };
   const foot = el("div", "form-foot");
   foot.append(go);
-  m.append(input, label, list, foot);
+  m.append(...[input, label, tq, list, foot].filter(Boolean));
   input.focus();
 }
 
@@ -974,13 +987,6 @@ async function createPaper(input, template) {
 }
 
 // templates
-function renderTemplates() {
-  const box = $("#publishers");
-  box.innerHTML = "";
-  const pubs = state.workspace?.publishers ?? [];
-  if (!pubs.length) box.append(el("p", "empty", "還沒有模板"));
-  pubs.forEach((p) => box.append(el("div", "", `${p}　${state.workspace?.publisher_titles?.[p] ?? ""}`)));
-}
 
 /** Open the Console key page in the system browser, then wait in the key field. */
 async function openKeysPage(input) {

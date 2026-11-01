@@ -818,3 +818,63 @@ table.plan .src { color: var(--faint); font-size: 11px; }
 .wz-foot[hidden] { display: none; }
 .look-row .seg button { padding: 6px 18px; white-space: nowrap; }
 .look-row .theme { padding: 6px 8px; }
+
+/* ── Journal templates window ── */
+.tpl-body { display: grid; grid-template-columns: 300px 1fr; padding: 0; min-height: 0; }
+.tpl-side { border-right: 1px solid var(--line); padding: 14px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.tpl-side .search { width: 100%; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); padding: 7px 9px; font: 13px var(--sans); }
+.tpl-side .ghost.wide { display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px dashed var(--line-strong); padding: 7px; }
+.tpl-side .ghost.wide svg.i { width: 15px; height: 15px; }
+.tpl-items { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.tpl-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: none; border: 1px solid transparent; border-radius: var(--r); padding: 8px 10px; color: var(--text); }
+.tpl-item:hover { background: var(--surface); }
+.tpl-item[aria-current="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.tpl-item .name { font-weight: 600; font-size: 13px; }
+.tpl-item .sub { font: 11px var(--mono); color: var(--faint); }
+.tpl-main { padding: 20px 26px; overflow: auto; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.tpl-main h3 { margin: 0; font: 600 17px var(--sans); }
+.tpl-head { display: flex; align-items: center; gap: 8px; }
+.tpl-sub { font: 11.5px var(--mono); color: var(--faint); margin-top: -8px; }
+.tpl-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.tpl-form .wide { grid-column: 1 / -1; }
+.tf { display: flex; flex-direction: column; gap: 5px; }
+.tf .lbl { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.tf input, .tf select, .tf textarea { width: 100%; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); padding: 7px 9px; font: 13px var(--sans); }
+.tf textarea { resize: vertical; line-height: 1.55; }
+.tf input:focus, .tf select:focus, .tf textarea:focus { outline: none; border-color: var(--accent); }
+.tpl-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tpl-actions input { flex: 0 1 260px; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); padding: 7px 9px; font: 13px var(--sans); }
+.tpl-out { font: 12px var(--mono); color: var(--muted); }
+.tpl-out.ok { color: var(--ok); } .tpl-out.bad { color: var(--err); }
+.tpl-sample { flex: 1; min-height: 420px; width: 100%; font: 12px/1.55 var(--mono); background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 10px; resize: none; }
+.menu .tpl-group { font: 600 10.5px var(--mono); color: var(--faint); letter-spacing: .06em; padding: 8px 10px 2px; }
+.tpl-kinds { width: 100%; }
+.tpl-kinds button { flex: 1; padding: 6px 0; }
+
+/* ── Template conversion with Claude ── */
+.tpl-adds { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.cv-badge { font: 600 9.5px var(--mono); letter-spacing: .04em; color: var(--accent); border: 1px solid currentColor; border-radius: 3px; padding: 1px 4px; margin-left: 4px; }
+.cv-up { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cv-box { border: 1px solid var(--line-strong); border-radius: var(--r); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.cv-box-head { display: flex; align-items: center; gap: 6px; }
+.cv-box-head .ghost { margin-left: auto; }
+.cv-state { font-size: 12px; color: var(--faint); }
+.cv-state.ok { color: var(--ok); } .cv-state.bad { color: var(--err); }
+.cv-log { flex: 1; min-height: 220px; max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.cv-log:empty::before { content: "Claude 的工作會顯示在這裡"; color: var(--faint); }
+.cv-log.busy::after { content: "…"; color: var(--accent); animation: ex-pulse 1.2s ease-in-out infinite; }
+.cv-ev { line-height: 1.5; white-space: pre-wrap; }
+.cv-ev.say { color: var(--text); margin-top: 4px; }
+.cv-ev.do { font: 11.5px var(--mono); color: var(--muted); padding-left: 12px; }
+.cv-ev.do::before { content: "› "; color: var(--faint); }
+.cv-ev.err { font: 11.5px var(--mono); color: var(--warn); padding-left: 12px; }
+.cv-ev.user { align-self: flex-end; background: var(--accent-soft); border-radius: var(--r); padding: 4px 10px; max-width: 80%; }
+.cv-ev.done { font: 11px var(--mono); color: var(--ok); border-top: 1px solid var(--line); padding-top: 4px; margin-top: 4px; }
+.cv-bar { display: flex; gap: 8px; align-items: flex-end; }
+.cv-bar textarea { flex: 1; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); padding: 7px 9px; font: 13px var(--sans); resize: vertical; }
+.cv-bar .ghost[hidden] { display: none; }
+.cv-pages { display: flex; flex-direction: column; gap: 12px; }
+.cv-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cv-pair figure { margin: 0; text-align: center; }
+.cv-pair img { width: 100%; border: 1px solid var(--line-strong); background: #fff; }
+.cv-pair figcaption { font: 11px var(--mono); color: var(--faint); margin-top: 4px; }

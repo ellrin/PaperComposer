@@ -10,6 +10,7 @@ pub mod check;
 pub mod compose;
 pub mod decompose;
 pub mod front;
+pub mod journal;
 pub mod paper;
 pub mod table;
 pub mod vcs;

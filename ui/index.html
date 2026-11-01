@@ -114,11 +114,11 @@
     </div>
   </dialog>
 
-  <dialog class="dialog" id="dlgTpl" aria-label="模板">
+  <dialog class="dialog big" id="dlgTpl" aria-label="模板">
     <div class="dlg">
       <div class="dlg-head">
         <h2>期刊模板</h2>
-        <button class="help" data-tip="一個期刊一個資料夾，放在工作區的 publishers/：期刊的 .cls／.sty／.bst 與範例 sample.tex；README.md 的第一行標題會顯示成期刊名稱。">?</button>
+        <button class="help" data-tip="一個期刊一個模板，存在工作區的 publishers/〈名稱〉/：class、樣式檔、範例 sample.tex，以及期刊資料 template.toml。新期刊從現有模板複製後微調。">?</button>
         <button class="ico close" data-icon="x" aria-label="關閉 Esc"></button>
       </div>
       <div class="tpl-body" id="publishers"></div>
@@ -274,6 +274,8 @@
 <script src="refs.js"></script>
 <script src="export.js"></script>
 <script src="write.js"></script>
+<script src="templates.js"></script>
+<script src="convert.js"></script>
 <script src="app.js"></script>
 <script src="setup.js"></script>
 </body>

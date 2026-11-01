@@ -13,6 +13,7 @@
 
 pub mod claude;
 pub mod claude_code;
+pub mod convert;
 pub mod engine;
 pub mod export;
 pub mod import;
@@ -234,18 +235,6 @@ struct WorkspaceInfo {
     publisher_titles: std::collections::BTreeMap<String, String>,
 }
 
-/// "# Journal of X (JX)" in publishers/<p>/README.md → "Journal of X (JX)".
-fn publisher_titles(dir: &Path, names: &[String]) -> std::collections::BTreeMap<String, String> {
-    names
-        .iter()
-        .filter_map(|n| {
-            let t = std::fs::read_to_string(dir.join(n).join("README.md")).ok()?;
-            let h = t.lines().find_map(|l| l.strip_prefix("# "))?.trim().to_string();
-            (!h.is_empty()).then(|| (n.clone(), h))
-        })
-        .collect()
-}
-
 fn subdirs(dir: &Path) -> Vec<String> {
     let mut out: Vec<String> = std::fs::read_dir(dir)
         .into_iter()
@@ -267,7 +256,9 @@ async fn workspace_info(State(s): State<Shared>) -> Json<WorkspaceInfo> {
         root: ws.map(|w| w.display().to_string()),
         demo: l.demo,
         papers: ws.map(|w| subdirs(&w.join("papers"))).unwrap_or_default(),
-        publisher_titles: ws.map(|w| publisher_titles(&w.join("publishers"), &publishers)).unwrap_or_default(),
+        publisher_titles: ws
+            .map(|w| pc_core::journal::list(&w.join("publishers")).into_iter().map(|j| (j.id, j.meta.name)).collect())
+            .unwrap_or_default(),
         publishers,
     })
 }
@@ -1388,6 +1379,232 @@ async fn get_paper(State(s): State<Shared>, AxPath(name): AxPath<String>) -> imp
     }
 }
 
+// ── Journal templates ──────────────────────────────────
+
+async fn publishers_dir(s: &Shared) -> Result<PathBuf, axum::response::Response> {
+    let ws = refs_root(s).await?;
+    let d = ws.join("publishers");
+    std::fs::create_dir_all(&d).map_err(|e| bad(&e.to_string()))?;
+    Ok(d)
+}
+
+async fn list_templates(State(s): State<Shared>) -> impl IntoResponse {
+    match publishers_dir(&s).await {
+        Ok(d) => Json(pc_core::journal::list(&d)).into_response(),
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize)]
+struct NewJournal {
+    #[serde(flatten)]
+    meta: pc_core::journal::Meta,
+    from: String,
+}
+
+/// A new journal template, copied from an existing one.
+async fn create_template(State(s): State<Shared>, Json(b): Json<NewJournal>) -> impl IntoResponse {
+    let d = match publishers_dir(&s).await { Ok(d) => d, Err(r) => return r };
+    match pc_core::journal::create(&d, b.meta, &b.from) {
+        Ok(id) => Json(pc_core::journal::load(&d, &id)).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+async fn update_template(State(s): State<Shared>, AxPath(id): AxPath<String>, Json(b): Json<pc_core::journal::Update>) -> impl IntoResponse {
+    let d = match publishers_dir(&s).await { Ok(d) => d, Err(r) => return r };
+    match pc_core::journal::update(&d, &id, b) {
+        Ok(j) => Json(j).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+async fn get_template_sample(State(s): State<Shared>, AxPath(id): AxPath<String>) -> impl IntoResponse {
+    let d = match publishers_dir(&s).await { Ok(d) => d, Err(r) => return r };
+    if !paper::safe_name(&id) {
+        return bad("invalid template");
+    }
+    match pc_core::journal::read_sample(&d.join(&id)) {
+        Some(t) => t.into_response(),
+        None => (StatusCode::NOT_FOUND, "這個模板沒有 sample.tex").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SampleBody {
+    text: String,
+}
+
+async fn put_template_sample(State(s): State<Shared>, AxPath(id): AxPath<String>, Json(b): Json<SampleBody>) -> impl IntoResponse {
+    let d = match publishers_dir(&s).await { Ok(d) => d, Err(r) => return r };
+    match pc_core::journal::write_sample(&d, &id, &b.text) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+/// Build a paper from the template in a scratch folder and compile it.
+async fn check_template(State(s): State<Shared>, AxPath(id): AxPath<String>) -> impl IntoResponse {
+    let d = match publishers_dir(&s).await { Ok(d) => d, Err(r) => return r };
+    if !paper::safe_name(&id) || !d.join(&id).is_dir() {
+        return bad("找不到模板");
+    }
+    let tmp = std::env::temp_dir().join(format!("papercomposer-tplcheck-{}-{}", std::process::id(), id));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let res = match paper::create_paper_from_template(&tmp, "check", &d.join(&id)) {
+        Ok(dir) => export::build_pdf(&dir, &format!("tpl-{id}"), false).await,
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&tmp);
+    match res {
+        Ok(mut r) => {
+            r.file = None;
+            Json(r).into_response()
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "errors": [{ "message": e }] })).into_response(),
+    }
+}
+
+// ── Template conversion with Claude ────────────────────
+
+#[derive(Deserialize)]
+struct NewConversion {
+    name: String,
+    #[serde(default)]
+    kind: String,
+}
+
+async fn convert_create(Json(b): Json<NewConversion>) -> impl IntoResponse {
+    match convert::create(&b.name, &b.kind) {
+        Ok(j) => Json(j).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+async fn convert_get(AxPath(id): AxPath<String>) -> impl IntoResponse {
+    let Some(job) = convert::load(&id) else { return (StatusCode::NOT_FOUND, "找不到這次轉換").into_response() };
+    Json(serde_json::json!({ "job": job, "analysis": convert::analyze(&id), "files": convert::keepable(&id) })).into_response()
+}
+
+#[derive(Deserialize)]
+struct UploadQuery {
+    role: String,
+    name: String,
+}
+
+async fn convert_upload(AxPath(id): AxPath<String>, AxQuery(q): AxQuery<UploadQuery>, body: axum::body::Bytes) -> impl IntoResponse {
+    match convert::upload(&id, &q.role, &q.name, &body) {
+        Ok(()) => Json(convert::analyze(&id)).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+#[derive(Deserialize)]
+struct RunBody {
+    #[serde(default)]
+    instruction: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// Start the conversion, or tell Claude what to change next. Uses the
+/// subscription login when it is ready, else the API key.
+async fn convert_run(State(s): State<Shared>, AxPath(id): AxPath<String>, Json(b): Json<RunBody>) -> impl IntoResponse {
+    let Some(mut job) = convert::load(&id) else { return (StatusCode::NOT_FOUND, "找不到這次轉換").into_response() };
+    let ws = match refs_root(&s).await { Ok(w) => w, Err(r) => return r };
+    let auth = if engine_ready(&s, EngineChoice::Subscription).await {
+        convert::Auth::Subscription
+    } else if let Some((k, _)) = claude::key() {
+        convert::Auth::ApiKey(k)
+    } else {
+        return bad("模板轉換需要 Claude：在「設定 → Claude」登入帳號或設定 API key");
+    };
+    let model = b.model.filter(|m| m.starts_with("claude-")).unwrap_or_else(|| "claude-sonnet-5-5".into());
+    let system = convert::prompt(&ws);
+    let instruction = b.instruction.map(|i| i.trim().to_string()).filter(|i| !i.is_empty());
+    match convert::run(&mut job, auth, &model, &system, instruction).await {
+        Ok(()) => Json(job).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
+async fn convert_stop(AxPath(id): AxPath<String>) -> impl IntoResponse {
+    convert::stop(&id);
+    StatusCode::NO_CONTENT
+}
+
+#[derive(Deserialize)]
+struct FromQuery {
+    #[serde(default)]
+    from: usize,
+}
+
+async fn convert_events(AxPath(id): AxPath<String>, AxQuery(q): AxQuery<FromQuery>) -> impl IntoResponse {
+    let (events, next) = convert::events(&id, q.from);
+    let job = convert::load(&id);
+    Json(serde_json::json!({ "events": events, "next": next, "status": job.as_ref().map(|j| j.status.clone()), "error": job.and_then(|j| j.error) }))
+}
+
+/// Build a paper from the work in progress, the way PaperComposer will use
+/// the template, and render its first pages for comparison.
+async fn convert_check(AxPath(id): AxPath<String>) -> impl IntoResponse {
+    let Some(work) = convert::work(&id) else { return bad("bad job") };
+    if !work.join("sample.tex").is_file() {
+        return bad("還沒有 sample.tex");
+    }
+    let tmp = std::env::temp_dir().join(format!("papercomposer-convcheck-{id}"));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let name = format!("conv-{}", &id[..8]);
+    let res = match paper::create_paper_from_template(&tmp, "check", &work) {
+        Ok(dir) => export::build_pdf(&dir, &name, false).await,
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&tmp);
+    let preview = convert::root().join(&id).join("preview");
+    let _ = std::fs::create_dir_all(&preview);
+    for e in std::fs::read_dir(&preview).into_iter().flatten().flatten() {
+        let _ = std::fs::remove_file(e.path());
+    }
+    let pdf = export::cache_dir(&name).join("main.pdf");
+    if matches!(&res, Ok(r) if r.ok) {
+        convert::render_pages(&pdf, &preview, "output", 3).await;
+    }
+    match res {
+        Ok(mut r) => {
+            r.file = None;
+            Json(r).into_response()
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "errors": [{ "message": e }] })).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PageQuery {
+    which: String,
+    n: u32,
+}
+
+async fn convert_page(AxPath(id): AxPath<String>, AxQuery(q): AxQuery<PageQuery>) -> impl IntoResponse {
+    let Some(work) = convert::work(&id) else { return bad("bad job") };
+    let path = match q.which.as_str() {
+        "reference" => work.join(format!("_upload/prep/reference-{}.png", q.n.min(9))),
+        "output" => convert::root().join(&id).join(format!("preview/output-{}.png", q.n.min(9))),
+        _ => return bad("which"),
+    };
+    match std::fs::read(path) {
+        Ok(b) => ([(axum::http::header::CONTENT_TYPE, "image/png"), (axum::http::header::CACHE_CONTROL, "no-cache")], b).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn convert_save(State(s): State<Shared>, AxPath(id): AxPath<String>) -> impl IntoResponse {
+    let d = match publishers_dir(&s).await { Ok(d) => d, Err(r) => return r };
+    match convert::save_template(&id, &d) {
+        Ok(tid) => Json(serde_json::json!({ "id": tid })).into_response(),
+        Err(e) => bad(&e),
+    }
+}
+
 #[derive(Deserialize)]
 struct FrontEdit {
     field: String,
@@ -1948,6 +2165,19 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/papers/{name}/export", post(export_paper))
         .route("/api/papers/{name}/figure", get(paper_figure))
         .route("/api/papers/{name}/front", put(put_front))
+        .route("/api/templates", get(list_templates).post(create_template))
+        .route("/api/convert", post(convert_create))
+        .route("/api/convert/{id}", get(convert_get))
+        .route("/api/convert/{id}/upload", post(convert_upload).layer(axum::extract::DefaultBodyLimit::max(200 * 1024 * 1024)))
+        .route("/api/convert/{id}/run", post(convert_run))
+        .route("/api/convert/{id}/stop", post(convert_stop))
+        .route("/api/convert/{id}/events", get(convert_events))
+        .route("/api/convert/{id}/check", post(convert_check))
+        .route("/api/convert/{id}/page", get(convert_page))
+        .route("/api/convert/{id}/save", post(convert_save))
+        .route("/api/templates/{id}", put(update_template))
+        .route("/api/templates/{id}/sample", get(get_template_sample).put(put_template_sample))
+        .route("/api/templates/{id}/check", post(check_template))
         .route("/api/papers/{name}/export/open", post(open_export))
         .route("/api/refs", get(list_refs))
         .route("/api/refs/tags", get(ref_tags))
