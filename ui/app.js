@@ -1,5 +1,7 @@
 // PaperComposer UI.
-// Top bar: view switcher (write / database / templates), paper picker, and on
+// Top bar: this paper (picker, references, export), the workspace (database,
+// templates as windows) and the app (sync, settings). The writing toolbar sits
+// over the page. Below that:
 // the right AI & sync, appearance and light/dark.
 // Left: navigator of sections and paragraphs. Centre: the whole paper.
 // Right: one-shot writing box and checks for the current paragraph.
@@ -56,8 +58,9 @@ function applyTheme() {
   root.dataset.mode = m;
   root.classList.toggle("dim-paper", store.get("pc.dim", false));
   document.querySelectorAll(".theme[data-theme]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.theme === t)));
-  $("#dimPaper").setAttribute("aria-pressed", String(store.get("pc.dim", false)));
-  $("#mode").replaceChildren(icon(m === "dark" ? "moon" : "sun"));
+  document.querySelectorAll("#lookMode button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === m)));
+  const dim = store.get("pc.dim", false) ? "dim" : "white";
+  document.querySelectorAll("#lookPaper button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === dim)));
 }
 
 // ── Paper ──────────────────────────────────────────────
@@ -445,6 +448,7 @@ async function loadEngines(fresh = false) {
   try { state.engines = await api(`/api/engines${fresh ? "?fresh=1" : ""}`); } catch { state.engines = null; }
   renderEngineSwitch();
   renderStatus();
+  markSettings();
 }
 
 /** claude-sonnet-5-5 → Sonnet 5.5 */
@@ -637,27 +641,34 @@ function renderStatus() {
   eng.title = "寫作引擎（右側可切換）";
   eng.onclick = () => Setup.open(pick && pick !== "local" ? "claude" : "model");
   bar.append(eng);
-  bar.append(gitIndicator());
+  paintSync();
+}
+
+// The gear carries a dot while the app still needs setting up: no workspace
+// of the user's own, or no model to write with.
+function markSettings() {
+  const need = !state.profile || state.profile.demo || !state.engines || !(state.engines.local.status.connected || state.engines.subscription.configured || state.engines.api.configured);
+  $("#actSettings").classList.toggle("attn", !!need);
+  $("#actSettings").setAttribute("aria-label", state.profile?.demo ? "設定（還沒連接你的工作區）" : need ? "設定（還沒連接模型）" : "設定");
 }
 
 // ── Git sync ───────────────────────────────────────────
-function gitIndicator() {
+// The cloud in the top bar: synced, changes waiting, or not set up.
+function paintSync() {
   const g = state.git;
-  const b = el("button", "sync");
-  const dot = el("span", "dot");
-  let label, color = "var(--faint)";
-  if (state.syncing) { label = "同步中"; color = "var(--accent)"; }
-  else if (!g?.repo) { label = "設定同步"; color = "var(--warn)"; }
-  else if (g.changed.length) { label = `${g.changed.length} 項未同步`; color = "var(--warn)"; }
-  else if (g.ahead) { label = `${g.ahead} 個 commit 未推送`; color = "var(--warn)"; }
-  else if (!g.remote) { label = "已 commit（無遠端）"; color = "var(--ok)"; }
-  else { label = state.lastSync ? `已同步 ${state.lastSync}` : "已同步"; color = "var(--ok)"; }
-  dot.style.background = color;
-  b.append(dot, label);
-  b.title = g?.repo ? `${g.branch ?? ""} → ${g.remote ?? "沒有遠端"}\nCtrl+S 同步` : "工作區不是 Git repository";
-  b.disabled = state.syncing;
-  b.onclick = g?.repo ? syncNow : () => Setup.open("workspace");
-  return b;
+  const b = $("#actSync");
+  let label, st;
+  if (state.syncing) { label = "同步中"; st = "busy"; }
+  else if (!g?.repo) { label = "設定同步"; st = "off"; }
+  else if (g.changed.length) { label = `${g.changed.length} 項未同步　Ctrl+S`; st = "pending"; }
+  else if (g.ahead) { label = `${g.ahead} 個 commit 未推送　Ctrl+S`; st = "pending"; }
+  else if (!g.remote) { label = "已存檔（沒有遠端）"; st = "ok"; }
+  else { label = state.lastSync ? `已同步 ${state.lastSync}` : "已同步"; st = "ok"; }
+  b.dataset.state = st;
+  b.dataset.icon = st === "off" ? "cloudOff" : "cloud";
+  paintIcons(b.parentElement);
+  b.setAttribute("aria-label", label);
+  b.disabled = !!state.syncing;
 }
 
 async function refreshGit() {
@@ -699,33 +710,49 @@ function flash(msg, ms = 3000) {
   flashTimer = setTimeout(() => t.remove(), ms);
 }
 
-// ── Views ──────────────────────────────────────────────
-// "editor" or the id of a sheet. Exactly one view is active at a time.
-let view = "editor";
+// ── Windows ────────────────────────────────────────────
+// The paper is always the page. Workspace tools (database, templates) and
+// this paper's references open as windows over it; Esc or the backdrop
+// closes them.
+const dbOpen = () => $("#dlgDb").open;
 
-function setView(v) {
-  if (v === view) return;
-  if (view === "sheetDb" && state.db.dirty.size && !confirm("資料庫有未儲存的修改，仍要離開？")) return;
-  view = v;
-  document.querySelectorAll(".sheet").forEach((s) => (s.hidden = s.id !== v));
-  document.querySelectorAll(".views [data-view]").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.view === v)));
-  $("#actFile").hidden = $("#actInsert").hidden = $("#actExport").hidden = v !== "editor";
-  if (v === "sheetDb") openDb();
-  if (v === "sheetTemplate") renderTemplates();
-  if (v === "sheetRefs") PCRefs.renderPage();
+function openWindow(id) {
+  const d = $(`#${id}`);
+  if (!d.open) d.showModal();
+  if (id === "dlgTpl") renderTemplates();
+  if (id === "dlgPaperRefs") PCRefs.paperPage();
+}
+
+// The database window: one tab per table, and the reference library.
+function openDbTab(name) {
+  state.db.name = name;
+  if (!dbOpen()) $("#dlgDb").showModal();
+  openDb();
+}
+
+// Closing with unsaved database edits asks first.
+function closeWindow(d) {
+  if (d.id === "dlgDb" && state.db.dirty.size && !confirm("資料庫有未儲存的修改，仍要關閉？")) return;
+  d.close();
+}
+
+function wireWindows() {
+  document.querySelectorAll("dialog.dialog:not(#dlgSetup)").forEach((d) => {
+    d.querySelector(".close")?.addEventListener("click", () => closeWindow(d));
+    // A click on the backdrop lands on the <dialog> itself, not its content.
+    d.addEventListener("click", (e) => { if (e.target === d) closeWindow(d); });
+    d.addEventListener("cancel", (e) => { e.preventDefault(); closeWindow(d); });
+  });
 }
 
 // ── Hover menus on the top-bar icons ───────────────────
 // Clicking an icon does its main thing; hovering offers the finer entries.
 const MENUS = {
-  sheetDb: () => [
-    ...TABLES.map(([name, label]) => [label, () => openDbTab(name), view === "sheetDb" && state.db.name === name]),
+  db: () => [
+    ...TABLES.map(([name, label]) => [label, () => openDbTab(name), dbOpen() && state.db.name === name]),
+    ["文獻庫", () => openDbTab("@refs"), dbOpen() && state.db.name === "@refs"],
     "-",
-    ["拆解好句子…", () => { openDbTab(state.db.name); setTimeout(() => $("#dcText").focus(), 50); }],
-  ],
-  insert: () => [
-    ["表格…", () => PCTable.insertNew($("#actInsert"))],
-    ["引用…", () => PCRefs.picker($("#actInsert"))],
+    ["拆解好句子…", () => { openDbTab(state.db.name === "@refs" ? TABLES[0][0] : state.db.name); setTimeout(() => $("#dcText").focus(), 50); }],
   ],
   export: () => [
     ["PDF　Ctrl+P", () => PCExport.run("pdf")],
@@ -734,23 +761,7 @@ const MENUS = {
     "-",
     ["在資料夾中顯示", PCExport.reveal],
   ],
-  sheetTemplate: () => [
-    ["出版社模板", () => setView("sheetTemplate"), view === "sheetTemplate"],
-    ...(state.workspace?.publishers ?? []).map((p) => [p, () => setView("sheetTemplate")]),
-  ],
-  ai: () => [
-    ["工作區與同步", () => Setup.open("workspace")],
-    ["本機模型", () => Setup.open("model")],
-    ["Claude", () => Setup.open("claude")],
-    "-",
-    ["立即同步　Ctrl+S", syncNow],
-  ],
 };
-
-function openDbTab(name) {
-  state.db.name = name;
-  if (view === "sheetDb") showTable(name); else setView("sheetDb");
-}
 
 const hm = { btn: null, timer: null };
 function openHoverMenu(btn) {
@@ -793,22 +804,21 @@ function wireHoverMenus() {
   m.addEventListener("mouseleave", () => closeHoverMenu());
 }
 
-// appearance popover
-function toggleLook(force) {
-  const p = $("#lookPop");
-  const show = force ?? p.hidden;
-  p.hidden = !show;
-  $("#actLook").setAttribute("aria-expanded", String(show));
-  if (!show) return;
-  const r = $("#actLook").getBoundingClientRect();
-  p.style.top = `${r.bottom + 6}px`;
-  p.style.right = `${innerWidth - r.right}px`;
-}
-
-// paper menu: switch papers, or name a new blank one at the bottom
+// Paper menu: the papers to switch to; "新論文" and "匯入" turn the menu
+// into a small form in place.
 function toggleFileMenu() {
   const m = $("#fileMenu");
   if (!m.hidden) { m.hidden = true; return; }
+  fileMenuList();
+  const r = $("#actFile").getBoundingClientRect();
+  m.style.top = `${r.bottom + 4}px`;
+  m.style.left = `${r.left}px`;
+  m.hidden = false;
+}
+
+function fileMenuList() {
+  const m = $("#fileMenu");
+  m.className = "menu";
   m.innerHTML = "";
   const papers = state.workspace?.papers ?? [];
   if (!papers.length) m.append(el("div", "empty", "還沒有論文"));
@@ -819,31 +829,101 @@ function toggleFileMenu() {
     b.onclick = () => { m.hidden = true; openPaper(name); };
     m.append(b);
   });
-  const row = el("div", "new-row");
-  const input = el("input");
-  input.placeholder = "新論文名稱，Enter 建立";
-  const tpl = el("select");
-  tpl.setAttribute("aria-label", "模板");
-  tpl.append(new Option("空白", ""));
-  (state.workspace?.publishers ?? []).forEach((p) => tpl.append(new Option(p, p)));
-  tpl.append(new Option("匯入檔案…", "@file"), new Option("arXiv…", "@arxiv"));
-  const placeholder = () => (input.placeholder = tpl.value === "@arxiv" ? "arXiv 編號或網址，Enter 匯入" : "新論文名稱，Enter 建立");
-  tpl.value = store.get("pc.newTemplate", "");
-  if (tpl.value.startsWith("@")) tpl.value = "";
-  placeholder();
-  tpl.onchange = () => {
-    if (tpl.value === "@file") { tpl.value = store.get("pc.newTemplate", ""); pickProject(input); return; }
-    if (tpl.value !== "@arxiv") store.set("pc.newTemplate", tpl.value);
-    placeholder();
-    input.focus();
+  m.append(el("div", "sep"));
+  const add = el("button", "", "新論文");
+  add.prepend(icon("plus"));
+  add.onclick = newPaperForm;
+  const imp = el("button", "", "匯入");
+  imp.prepend(icon("upload"));
+  imp.onclick = importForm;
+  m.append(add, imp);
+}
+
+// Form header inside the menu: back to the list, a title, an optional "?".
+function menuForm(title, tip) {
+  const m = $("#fileMenu");
+  m.className = "menu form";
+  m.innerHTML = "";
+  const head = el("div", "form-head");
+  head.append(iconButton("back", "返回", fileMenuList), el("b", "", title));
+  if (tip) { const h = el("button", "help", "?"); h.dataset.tip = tip; head.append(h); }
+  m.append(head);
+  return m;
+}
+
+function newPaperForm() {
+  const m = menuForm("新論文");
+  const input = el("input", "field");
+  input.placeholder = "論文名稱";
+  const pubs = state.workspace?.publishers ?? [];
+  const titles = state.workspace?.publisher_titles ?? {};
+  let chosen = store.get("pc.newTemplate", "");
+  if (chosen && !pubs.includes(chosen)) chosen = "";
+  const list = el("div", "tpl-list");
+  const label = el("div", "form-label");
+  label.append(el("span", "", "模板"));
+  if (!pubs.length) {
+    const h = el("button", "help", "?");
+    h.dataset.tip = "期刊模板放在工作區的 publishers/ 資料夾，一個期刊一個資料夾（含 .cls 與 sample.tex）。";
+    label.append(h);
+  }
+  const option = (value, name, sub) => {
+    const b = el("button", "tpl");
+    b.append(el("span", "name", name));
+    if (sub) b.append(el("span", "sub", sub));
+    b.setAttribute("aria-pressed", String(value === chosen));
+    b.onclick = () => {
+      chosen = value;
+      list.querySelectorAll(".tpl").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+      input.focus();
+    };
+    list.append(b);
   };
-  input.onkeydown = (e) => { if (e.key === "Enter") createPaper(input, tpl.value); if (e.key === "Escape") m.hidden = true; };
-  row.append(icon("plus"), input, tpl);
-  m.append(row);
-  const r = $("#actFile").getBoundingClientRect();
-  m.style.top = `${r.bottom + 4}px`;
-  m.style.left = `${r.left}px`;
-  m.hidden = false;
+  option("", "空白");
+  pubs.forEach((p) => option(p, p, titles[p]));
+  const go = el("button", "primary small", "建立");
+  const create = () => { store.set("pc.newTemplate", chosen); createPaper(input, chosen); };
+  go.onclick = create;
+  input.onkeydown = (e) => { if (e.key === "Enter") create(); if (e.key === "Escape") m.hidden = true; };
+  const foot = el("div", "form-foot");
+  foot.append(go);
+  m.append(input, label, list, foot);
+  input.focus();
+}
+
+function importForm() {
+  const m = menuForm("匯入", "現有的 LaTeX 論文：.zip、.tar.gz 或 .tex，或 arXiv 上的論文（下載作者上傳的原始檔）。每個 \\section 會成為一個可編輯的章節。");
+  const name = el("input", "field");
+  name.placeholder = "論文名稱（可留空）";
+  const file = el("button", "ghost wide", "選擇檔案…");
+  file.prepend(icon("upload"));
+  file.onclick = () => pickProject(name);
+  const or = el("div", "form-label", "或");
+  const arxiv = el("input", "field");
+  arxiv.placeholder = "arXiv 編號或網址";
+  const go = el("button", "primary small", "匯入");
+  const run = () => importArxiv(arxiv, name);
+  go.onclick = run;
+  arxiv.onkeydown = (e) => { if (e.key === "Enter") run(); if (e.key === "Escape") m.hidden = true; };
+  const foot = el("div", "form-foot");
+  foot.append(go);
+  m.append(name, file, or, arxiv, foot);
+  name.focus();
+}
+
+async function importArxiv(input, nameInput) {
+  const id = input.value.trim();
+  if (!id) { input.focus(); return; }
+  input.disabled = true;
+  flash("從 arXiv 下載中…", 60000);
+  try {
+    const r = await api("/api/papers/import-arxiv", { id, name: nameInput.value.trim() || null });
+    await opened(r.name);
+  } catch (e) {
+    flash(e.message, 6000);
+    input.disabled = false;
+    input.focus();
+  }
 }
 
 // Import a LaTeX project from a file: .zip, .tar.gz or .tex. The name box
@@ -881,15 +961,9 @@ async function opened(name) {
 
 async function createPaper(input, template) {
   const name = input.value.trim();
-  if (!name) return;
+  if (!name) { input.focus(); return; }
   input.disabled = true;
   try {
-    if (template === "@arxiv") {
-      flash("從 arXiv 下載中…", 60000);
-      const r = await api("/api/papers/import-arxiv", { id: name });
-      await opened(r.name);
-      return;
-    }
     await api("/api/papers", { name, template: template || null });
     await opened(name);
   } catch (e) {
@@ -901,11 +975,11 @@ async function createPaper(input, template) {
 
 // templates
 function renderTemplates() {
-  const ul = $("#publishers");
-  ul.innerHTML = "";
+  const box = $("#publishers");
+  box.innerHTML = "";
   const pubs = state.workspace?.publishers ?? [];
-  if (!pubs.length) ul.append(el("li", "empty", "publishers/ 目前是空的"));
-  pubs.forEach((p) => ul.append(el("li", "", p)));
+  if (!pubs.length) box.append(el("p", "empty", "還沒有模板"));
+  pubs.forEach((p) => box.append(el("div", "", `${p}　${state.workspace?.publisher_titles?.[p] ?? ""}`)));
 }
 
 /** Open the Console key page in the system browser, then wait in the key field. */
@@ -927,6 +1001,13 @@ async function openDb() {
       b.onclick = () => showTable(name);
       tabs.append(b);
     });
+    // the reference library shared by every paper
+    const lib = el("button");
+    lib.setAttribute("role", "tab");
+    lib.dataset.name = "@refs";
+    lib.append("文獻庫", el("span", "c", ""));
+    lib.onclick = () => showTable("@refs");
+    tabs.append(lib);
     const ds = $("#dbSection");
     ROLES.forEach((r) => ds.append(new Option(r, r)));
     const dc = $("#dcSection");
@@ -947,8 +1028,12 @@ function showTable(name) {
   state.db.name = name;
   document.querySelectorAll("#dbTabs button").forEach((b) => {
     b.setAttribute("aria-selected", String(b.dataset.name === name));
-    b.querySelector(".c").textContent = state.db.tables[b.dataset.name]?.rows.length ?? "";
+    if (b.dataset.name !== "@refs") b.querySelector(".c").textContent = state.db.tables[b.dataset.name]?.rows.length ?? "";
   });
+  const refs = name === "@refs";
+  $("#dlgDb .db").hidden = refs;
+  $("#refsPane").hidden = !refs;
+  if (refs) { PCRefs.renderPage(); return; }
   const t = state.db.tables[name];
   const grid = $("#dbGrid");
   grid.innerHTML = "";
@@ -1111,57 +1196,57 @@ function wire() {
 
   let tip;
   const closeTip = () => { tip?.remove(); tip = null; document.querySelectorAll(".help").forEach((h) => h.setAttribute("aria-expanded", "false")); };
-  document.querySelectorAll(".help").forEach((h) => {
-    h.setAttribute("aria-expanded", "false");
-    h.onclick = (e) => {
-      e.stopPropagation();
-      const was = h.getAttribute("aria-expanded") === "true";
-      closeTip();
-      if (was) return;
-      tip = el("div", "tip", h.dataset.tip);
-      (h.closest("dialog") ?? document.body).append(tip);
-      const r = h.getBoundingClientRect();
-      tip.style.top = `${r.bottom + 6}px`;
-      tip.style.left = `${Math.max(8, Math.min(r.left - 100, innerWidth - 260))}px`;
-      h.setAttribute("aria-expanded", "true");
-    };
-  });
-  document.addEventListener("click", (e) => {
+  // "?" tips, also for ones added later (menus, forms)
+  const toggleTip = (h) => {
+    const was = h.getAttribute("aria-expanded") === "true";
     closeTip();
+    if (was) return;
+    tip = el("div", "tip", h.dataset.tip);
+    (h.closest("dialog") ?? document.body).append(tip);
+    const r = h.getBoundingClientRect();
+    tip.style.top = `${r.bottom + 6}px`;
+    tip.style.left = `${Math.max(8, Math.min(r.left - 100, innerWidth - 260))}px`;
+    h.setAttribute("aria-expanded", "true");
+  };
+  document.addEventListener("click", (e) => {
+    const help = e.target.closest?.(".help");
+    if (help) { toggleTip(help); return; }
+    closeTip();
+    // a control that replaced itself (a menu turning into a form) is not "outside"
+    if (!e.target.isConnected) return;
     if (!e.target.closest("#fileMenu, #actFile")) $("#fileMenu").hidden = true;
     if (!e.target.closest("#modelMenu, #cEngine")) $("#modelMenu").hidden = true;
-    if (!e.target.closest("#lookPop, #actLook")) toggleLook(false);
     if (!e.target.closest("#exportPop, #actExport, #hoverMenu") && !PCExport.busy) PCExport.close();
   });
   document.addEventListener("keydown", (e) => {
     // Ctrl+S: save database edits, then commit and push the workspace.
     if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); syncNow(); return; }
     // Ctrl+P: the submission PDF instead of printing the page.
-    if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); if (view === "editor") PCExport.run("pdf"); return; }
-    if (e.key !== "Escape" || $("#dlgSetup").open) return;
-    // Esc peels one layer: tip / menu / popover first, then back to the editor.
-    const layered = !!document.querySelector(".tip:not(.flash)") || !$("#fileMenu").hidden || !$("#modelMenu").hidden || !$("#lookPop").hidden || !$("#exportPop").hidden;
-    closeTip(); $("#fileMenu").hidden = true; $("#modelMenu").hidden = true; toggleLook(false); closeHoverMenu(true); PCExport.close();
-    if (!layered && view !== "editor" && !e.target.closest("input, textarea, select")) setView("editor");
+    if ((e.ctrlKey || e.metaKey) && e.key === "p") { e.preventDefault(); if (!document.querySelector("dialog[open]")) PCExport.run("pdf"); return; }
+    // Esc closes tips, menus and popovers; open windows close themselves.
+    if (e.key !== "Escape" || document.querySelector("dialog[open]")) return;
+    closeTip(); $("#fileMenu").hidden = true; $("#modelMenu").hidden = true; closeHoverMenu(true); PCExport.close();
   });
 
   wireHoverMenus();
+  wireWindows();
   $("#actFile").onclick = toggleFileMenu;
-  $("#actInsert").onclick = () => PCTable.insertNew($("#actInsert"));
+  $("#actRefs").onclick = () => openWindow("dlgPaperRefs");
   $("#actExport").onclick = () => PCExport.run("pdf");
-  document.querySelectorAll(".views [data-view]").forEach((b) => (b.onclick = () => setView(b.dataset.view)));
-  $("#actLook").onclick = () => toggleLook();
-  $("#actConnect").onclick = () => Setup.open();
+  $("#actDb").onclick = () => openDbTab(state.db.name);
+  $("#actTpl").onclick = () => openWindow("dlgTpl");
+  $("#actSync").onclick = () => (state.git?.repo ? syncNow() : Setup.open("workspace"));
+  $("#actSettings").onclick = () => Setup.open();
 
   document.querySelectorAll(".theme[data-theme]").forEach((b) => { b.onclick = () => { store.set("pc.theme", b.dataset.theme); applyTheme(); }; });
-  $("#mode").onclick = () => { store.set("pc.mode", document.documentElement.dataset.mode === "dark" ? "light" : "dark"); applyTheme(); };
-  $("#dimPaper").onclick = () => { store.set("pc.dim", !store.get("pc.dim", false)); applyTheme(); };
 
   document.querySelectorAll(".seg").forEach((s) => {
     s.querySelectorAll("button").forEach((b) => {
       b.onclick = () => s.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
     });
   });
+  document.querySelectorAll("#lookMode button").forEach((b) => b.addEventListener("click", () => { store.set("pc.mode", b.dataset.v); applyTheme(); }));
+  document.querySelectorAll("#lookPaper button").forEach((b) => b.addEventListener("click", () => { store.set("pc.dim", b.dataset.v === "dim"); applyTheme(); }));
   $("#generate").onclick = compose;
   $("#points").onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) compose(); };
 
@@ -1179,11 +1264,10 @@ function wire() {
 }
 
 async function boot() {
+  PCWrite.build();
   paintIcons();
   applyTheme();
   wire();
-  view = null;
-  setView("editor");
   try { state.workspace = await api("/api/workspace"); } catch {}
   // Bring in work from other devices before showing anything.
   try {
@@ -1194,27 +1278,17 @@ async function boot() {
   try {
     state.profile = await api("/api/profile");
     state.ruleText = await api("/api/profile/rules");
-    const chips = $("#profileChips");
-    chips.innerHTML = "";
-    // Only what to do next: no workspace yet → connect one.
-    if (state.profile.demo) {
-      const go = el("button", "chip warn", "連接工作區");
-      go.onclick = () => Setup.open("workspace");
-      chips.append(go);
-    } else {
-      const name = el("span", "chip", state.profile.error ? "資料庫讀取失敗" : state.profile.name);
-      name.title = state.profile.error ?? state.profile.path;
-      chips.append(name);
-    }
-    if (state.profile.issues.length) {
-      const i = el("button", "chip warn", `修正 ${state.profile.issues.length} 筆格式`);
-      i.title = state.profile.issues.map((x) => `${x.file}:${x.line} ${x.column ?? ""} ${x.message}`).join("\n");
-      i.onclick = () => setView("sheetDb");
-      chips.append(i);
-    }
+    // The writing database's name sits in its window; a demo workspace
+    // (none of the user's own connected yet) marks the gear.
+    const pn = $("#profileName");
+    pn.textContent = state.profile.error ? "資料庫讀取失敗" : state.profile.demo ? "示範資料" : state.profile.name;
+    pn.title = state.profile.error ?? state.profile.path;
+    pn.classList.toggle("warn", !!state.profile.error || state.profile.demo || state.profile.issues.length > 0);
+    if (state.profile.issues.length) pn.title += "\n" + state.profile.issues.map((x) => `${x.file}:${x.line} ${x.column ?? ""} ${x.message}`).join("\n");
+    markSettings();
     state.profile.functions.forEach((f) => $("#cFunction").append(new Option(f.replace(/_/g, " "), f)));
   } catch {
-    $("#profileChips").innerHTML = '<span class="chip warn">伺服器未啟動</span>';
+    flash("伺服器未啟動", 8000);
   }
   const papers = state.workspace?.papers ?? [];
   const last = store.get("pc.paper", null);

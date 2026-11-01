@@ -458,5 +458,54 @@ const PCRefs = (() => {
     });
   }
 
-  return { renderPage, picker, insertAt };
+  // ── this paper's references ──
+  // What the paper cites, in citation order, with what each one is used for.
+  async function paperPage() {
+    const box = $("#paperRefs");
+    box.innerHTML = "";
+    if (!state.paper) { box.append(el("p", "empty", "先開啟一篇論文")); return; }
+    const name = encodeURIComponent(state.paper.name);
+    await load();
+    let c;
+    try { c = await api(`/api/papers/${name}/citations`); } catch (e) { box.append(el("p", "empty", e.message)); return; }
+    const bar = el("div", "refs-bar");
+    const add = el("button", "primary small", "插入引用…");
+    add.onclick = () => { $("#dlgPaperRefs").close(); PCRefs.picker($("#wbCite") ?? $("#actRefs")); };
+    bar.append(add);
+    box.append(bar);
+    const local = c.local ?? [];
+    const find = (k) => refs.find((x) => x.key === k) ?? local.find((x) => x.key === k);
+    const missing = c.cited.filter((k) => !find(k));
+    $("#paperRefsCount").textContent = `${c.cited.length} 篇${missing.length ? ` · ${missing.length} 篇找不到書目` : ""}`;
+    if (!c.cited.length) { box.append(el("p", "empty", "這篇還沒有引用")); return; }
+    const list = el("ol", "paper-ref-list");
+    c.cited.forEach((key, i) => {
+      const r = find(key);
+      const li = el("li", r ? "" : "missing");
+      const num = PCTex.citeNumber?.(key) ?? String(i + 1);
+      li.append(el("span", "n", `[${num}]`));
+      const main = el("div", "body");
+      if (r) {
+        const t = el("div", "title", r.title || key);
+        const meta = [r.authors, r.year, r.venue].filter(Boolean).join(" · ");
+        main.append(t, el("div", "meta", refs.includes(r) ? meta : `${meta}　（論文的 .bib）`));
+        if (r.one_liner) main.append(el("div", "one", r.one_liner));
+      } else {
+        main.append(el("div", "title", key), el("div", "meta", "找不到書目"));
+      }
+      const purpose = el("input", "purpose");
+      purpose.placeholder = "在這篇用來說明…";
+      purpose.value = c.purposes[key] ?? "";
+      purpose.onchange = async () => {
+        try { await api(`/api/papers/${name}/citations`, { key, purpose: purpose.value }); refreshGit(); }
+        catch (e) { flash(e.message, 5000); }
+      };
+      main.append(purpose);
+      li.append(main);
+      list.append(li);
+    });
+    box.append(list);
+  }
+
+  return { renderPage, picker, insertAt, paperPage };
 })();

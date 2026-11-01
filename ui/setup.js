@@ -1,5 +1,6 @@
-// "AI & sync" dialog: workspace & sync, local model, Claude.
-// Pops up on first run; the AI button in the top bar reopens it.
+// Settings: workspace & sync, local model, Claude, appearance.
+// On first run it walks through the first three as steps; the gear in the
+// top bar reopens it as plain settings, without the step buttons.
 // Every user points the app at their own private workspace; nothing here is
 // tied to a particular account or repository.
 
@@ -19,12 +20,14 @@ const Setup = (() => {
     render();
   }
 
-  const STEPS = ["workspace", "model", "claude"];
-  const LAST = STEPS.length - 1;
+  const STEPS = ["workspace", "model", "claude", "look"];
+  const LAST = 2; // the guided steps end at Claude; appearance is settings only
+  let guided = false;
 
   /** Open on step `s` (index or name), or on the first unfinished one. */
-  async function open(s, showVia) {
+  async function open(s, showVia, settings = true) {
     if (typeof s === "string") s = STEPS.indexOf(s);
+    guided = !settings;
     const dlg = $("#dlgSetup");
     if (!dlg.open) dlg.showModal();
     if (showVia) via = showVia;
@@ -62,9 +65,10 @@ const Setup = (() => {
       b.onclick = () => { step = i; render(); };
     });
     document.querySelectorAll(".wizard .step").forEach((s) => (s.hidden = +s.dataset.step !== step));
+    $(".wz-foot").hidden = !guided || step > LAST;
     $("#wzPrev").disabled = step === 0;
     $("#wzNext").textContent = step === LAST ? "完成" : "下一步";
-    [renderWorkspace, renderModels, renderClaude][step]();
+    [renderWorkspace, renderModels, renderClaude, () => {}][step]();
   }
 
   // ── 01 workspace ──
@@ -416,7 +420,7 @@ const Setup = (() => {
   async function maybeOpen() {
     try {
       const s = await api("/api/setup/status");
-      if (s.first_run && !store.get("pc.setupSeen", false)) open(0);
+      if (s.first_run && !store.get("pc.setupSeen", false)) open(0, null, false);
     } catch {}
   }
 

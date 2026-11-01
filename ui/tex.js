@@ -773,6 +773,8 @@ window.PCTex = (() => {
   return {
     setMacros, setNumbers, setFigureBase, number, resetCounters, frontNode, bibliographyNode, render, isDisplay, heading, headingNumber, needsWhole, stripComments, tabularNode,
     numberEquations: (paragraphs) => number([{ paragraphs }]),
+    citeNumber: (key) => cites[key]?.n ?? null,
     get labels() { return labels; },
+    get kinds() { return kinds; },
   };
 })();

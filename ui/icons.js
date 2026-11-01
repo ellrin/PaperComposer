@@ -48,6 +48,19 @@ const ICONS = {
   back: '<path d="m15 18-6-6 6-6"/>',
   send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z"/>',
   export: '<path d="M12 3v12M7 10l5 5 5-5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>',
+  cloud: '<path d="M17.5 19H8a5 5 0 1 1 .9-9.92A6 6 0 0 1 20.5 11a4 4 0 0 1-3 8Z"/>',
+  cloudOff: '<path d="M17.5 19H8a5 5 0 1 1 .9-9.92A6 6 0 0 1 20.5 11a4 4 0 0 1-3 8Z"/><path d="M4 4l16 16"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>',
+  // writing toolbar
+  bold: '<path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z"/>',
+  italic: '<path d="M10 5h8M6 19h8M14 5l-4 14"/>',
+  mathInline: '<text x="12" y="16.5" text-anchor="middle" font-size="13" font-style="italic" font-family="Georgia, serif" fill="currentColor" stroke="none">$x$</text>',
+  symbol: '<text x="12" y="17" text-anchor="middle" font-size="16" font-family="Georgia, serif" fill="currentColor" stroke="none">α</text>',
+  equation: '<path d="M17 5H7l5 7-5 7h10"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-9 9"/>',
+  ref: '<path d="M9 7H6a4 4 0 0 0 0 8h3M15 7h3a4 4 0 0 1 0 8h-3M8 11h8"/>',
+  footnote: '<path d="M4 18h10M4 13h16M4 8h16"/><text x="19" y="8" text-anchor="middle" font-size="8" fill="currentColor" stroke="none">1</text>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/>',
   textSize: '<path d="M4 7V5h10v2M9 5v14M7 19h4M14 13v-1h7v1M17.5 12v7M16 19h3"/>',
 };
 

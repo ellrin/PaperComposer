@@ -230,6 +230,20 @@ struct WorkspaceInfo {
     demo: bool,
     papers: Vec<String>,
     publishers: Vec<String>,
+    /// Journal name from each template's README heading, when it has one.
+    publisher_titles: std::collections::BTreeMap<String, String>,
+}
+
+/// "# Journal of X (JX)" in publishers/<p>/README.md → "Journal of X (JX)".
+fn publisher_titles(dir: &Path, names: &[String]) -> std::collections::BTreeMap<String, String> {
+    names
+        .iter()
+        .filter_map(|n| {
+            let t = std::fs::read_to_string(dir.join(n).join("README.md")).ok()?;
+            let h = t.lines().find_map(|l| l.strip_prefix("# "))?.trim().to_string();
+            (!h.is_empty()).then(|| (n.clone(), h))
+        })
+        .collect()
 }
 
 fn subdirs(dir: &Path) -> Vec<String> {
@@ -248,11 +262,13 @@ fn subdirs(dir: &Path) -> Vec<String> {
 async fn workspace_info(State(s): State<Shared>) -> Json<WorkspaceInfo> {
     let l = s.loaded.read().await;
     let ws = l.workspace.as_deref();
+    let publishers = ws.map(|w| subdirs(&w.join("publishers"))).unwrap_or_default();
     Json(WorkspaceInfo {
         root: ws.map(|w| w.display().to_string()),
         demo: l.demo,
         papers: ws.map(|w| subdirs(&w.join("papers"))).unwrap_or_default(),
-        publishers: ws.map(|w| subdirs(&w.join("publishers"))).unwrap_or_default(),
+        publisher_titles: ws.map(|w| publisher_titles(&w.join("publishers"), &publishers)).unwrap_or_default(),
+        publishers,
     })
 }
 
@@ -1142,7 +1158,19 @@ async fn paper_citations(State(s): State<Shared>, AxPath(name): AxPath<String>) 
         .filter_map(|p| std::fs::read_to_string(p).ok())
         .collect::<Vec<_>>()
         .join("\n");
-    Json(serde_json::json!({ "cited": bib::cited_keys(&tex), "purposes": bib::read_citations(&dir.join("citations.csv")) })).into_response()
+    // entries in the paper's own .bib files, for keys the library lacks
+    let main = std::fs::read_to_string(dir.join("main.tex")).unwrap_or_default();
+    let local: Vec<serde_json::Value> = bib_files(&main)
+        .iter()
+        .filter_map(|f| std::fs::read(dir.join(f)).ok())
+        .flat_map(|b| bib::parse(&String::from_utf8_lossy(&b)).0)
+        .map(|e| {
+            let g = |k: &str| e.get(k).unwrap_or("").replace(['{', '}'], "");
+            let venue = format!("{}{}", g("journal"), g("booktitle"));
+            serde_json::json!({ "key": e.key, "title": g("title"), "authors": g("author"), "year": g("year"), "venue": venue })
+        })
+        .collect();
+    Json(serde_json::json!({ "cited": bib::cited_keys(&tex), "purposes": bib::read_citations(&dir.join("citations.csv")), "local": local })).into_response()
 }
 
 #[derive(Deserialize)]

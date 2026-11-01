@@ -191,7 +191,7 @@ svg.i { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-widt
   background-color: var(--bg);
   background-image: radial-gradient(var(--dot) 1px, transparent 1px);
   background-size: 16px 16px;
-  padding: 40px 32px 0;
+  padding: 0 32px;
 }
 .paper {
   width: min(680px, 100%); margin: 0 auto; min-height: 880px;
@@ -747,3 +747,74 @@ table.plan .src { color: var(--faint); font-size: 11px; }
 .paper .tex-front .empty { color: #9a9aa3; font-style: italic; }
 .paper .field-edit { width: 100%; font: 13px/1.6 var(--mono); color: inherit; background: var(--paper); border: 1px solid #d6d6da; border-radius: 4px; padding: 8px; resize: none; overflow: hidden; text-align: left; }
 .paper .tex-front .author-item:has(.field-edit) { display: block; flex-basis: 100%; }
+
+/* paper menu forms */
+.menu.form { width: 300px; padding: 6px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+.menu .form-head { display: flex; align-items: center; gap: 6px; margin: 0 -4px; }
+.menu .form-head b { flex: 1; font-weight: 600; font-size: 13px; }
+.menu .form-head .ico { width: 26px; height: 26px; }
+.menu input.field { width: 100%; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); font: 13px var(--sans); padding: 7px 9px; outline: none; }
+.menu input.field:focus { border-color: var(--accent); }
+.menu .form-label { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+.menu .tpl-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; margin: 0 -4px; }
+.menu .tpl-list button.tpl { flex-direction: column; align-items: flex-start; gap: 1px; padding: 6px 10px; border: 1px solid transparent; }
+.menu .tpl-list button.tpl .name { font: 500 12.5px var(--mono); }
+.menu .tpl-list button.tpl .sub { font-size: 11.5px; color: var(--faint); }
+.menu .tpl-list button.tpl[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.menu .form-foot { display: flex; justify-content: flex-end; }
+.menu button.ghost.wide { justify-content: center; border: 1px dashed var(--line-strong); }
+
+/* ── Top bar groups: this paper │ workspace │ app ── */
+.paper-bar { display: flex; align-items: center; gap: 2px; }
+.paper-bar .picker { margin-right: 6px; }
+.top .vsep { width: 1px; height: 20px; background: var(--line-strong); margin: 0 6px; }
+#actSettings { position: relative; }
+#actSettings.attn::after { content: ""; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+#actSync[data-state="pending"] { color: var(--warn); }
+#actSync[data-state="busy"] { color: var(--accent); }
+#actSync[data-state="off"] { color: var(--faint); }
+
+/* ── Writing toolbar: stays over the page while it scrolls ── */
+.writebar {
+  position: sticky; top: 0; z-index: 5; display: flex; justify-content: center; gap: 2px;
+  width: min(680px, 100%); margin: 0 auto 18px; padding: 8px 0 6px;
+  background: linear-gradient(var(--bg) 70%, transparent);
+}
+.writebar .grp { display: flex; gap: 1px; padding: 0 6px; border-right: 1px solid var(--line); }
+.writebar .grp:last-child { border-right: 0; }
+.writebar .ico { width: 30px; height: 30px; }
+.wb-pop { width: 300px; display: flex; flex-direction: column; gap: 8px; }
+.wb-pop .search { width: 100%; background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--text); padding: 6px 8px; font: 12.5px var(--sans); outline: none; }
+.sym-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; max-height: 260px; overflow: auto; }
+.sym-grid .sym { height: 30px; background: none; border: 1px solid transparent; border-radius: 4px; color: var(--text); font: 16px "Source Serif 4", Georgia, serif; }
+.sym-grid .sym:hover { border-color: var(--accent); background: var(--accent-soft); }
+.ref-pick { display: flex; flex-direction: column; max-height: 280px; overflow: auto; }
+.ref-pick button { display: flex; justify-content: space-between; gap: 12px; background: none; border: 0; padding: 6px 8px; border-radius: 4px; color: var(--text); text-align: left; }
+.ref-pick button:hover { background: var(--surface-hover); }
+.ref-pick .key { font: 11px var(--mono); color: var(--faint); }
+
+/* ── Windows ── */
+.dialog.big { width: min(1240px, calc(100vw - 48px)); height: calc(100vh - 64px); }
+.dlg-head .close { margin-left: auto; }
+.dlg-head .chip.warn { color: var(--warn); border-color: currentColor; }
+#dlgDb .db { flex: 1; min-height: 0; }
+#dlgDb .db[hidden], .refs-pane[hidden] { display: none; }
+.refs-pane { flex: 1; min-height: 0; overflow: auto; padding: 12px 20px; }
+.refs-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--faint); font-size: 12px; }
+.tpl-body { flex: 1; overflow: auto; padding: 16px 20px; }
+.paper-refs { flex: 1; overflow: auto; padding: 14px 20px; display: flex; flex-direction: column; gap: 12px; }
+.paper-refs .count, .dlg-head .count { font: 12px var(--mono); color: var(--faint); }
+.paper-ref-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.paper-ref-list li { display: grid; grid-template-columns: 44px 1fr; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.paper-ref-list li.missing .title { color: var(--warn); }
+.paper-ref-list .n { font: 12px var(--mono); color: var(--muted); padding-top: 2px; }
+.paper-ref-list .title { font-weight: 600; }
+.paper-ref-list .meta, .paper-ref-list .one { font-size: 12px; color: var(--faint); }
+.paper-ref-list .purpose { margin-top: 6px; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); color: var(--text); padding: 5px 8px; font: 12.5px var(--sans); }
+
+/* ── Settings: appearance ── */
+.look-row { display: flex; align-items: center; gap: 16px; }
+.look-row .lbl { width: 48px; color: var(--muted); font-size: 12.5px; }
+.wz-foot[hidden] { display: none; }
+.look-row .seg button { padding: 6px 18px; white-space: nowrap; }
+.look-row .theme { padding: 6px 8px; }

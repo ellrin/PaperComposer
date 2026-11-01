@@ -50,7 +50,6 @@ const PCExport = (() => {
     if (si >= 0) {
       b.onclick = () => {
         close();
-        setView("editor");
         const pi = e.para ?? 0;
         select(si, pi);
         (paraEl(si, pi) ?? document.getElementById(`sec-${si}`))?.scrollIntoView({ block: "center", behavior: "smooth" });
