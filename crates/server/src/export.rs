@@ -430,28 +430,23 @@ const APP_FILES: &[&str] = &["citations.csv", "main.bbl", "main.tex", "00README.
 /// `export/<name>-latex.zip`: a source package that compiles on its own,
 /// as journals and arXiv want it: main.tex with the sections merged back
 /// in, the compiled .bbl, and the class, style, .bib and figure files.
-/// Run after a successful build_pdf, so the .bbl is current.
+/// Everything sits at the top level, because many submission systems
+/// (Editorial Manager among them) do not accept subfolders: paths in
+/// main.tex are rewritten to match. Run after a successful build_pdf, so
+/// the .bbl is current.
 pub fn build_latex_zip(paper: &Path, name: &str) -> Result<String, String> {
     use std::io::Write;
     let main = std::fs::read_to_string(paper.join("main.tex")).map_err(|e| e.to_string())?;
-    let flat = paper::flatten(paper, paper, &main, &mut Vec::new(), 0);
-    let rel = format!("export/{name}-latex.zip");
-    let dest = export_dir(paper).map_err(|e| e.to_string())?.join(format!("{name}-latex.zip"));
-    let file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(file);
-    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    let err = |e: zip::result::ZipError| e.to_string();
-    zip.start_file("main.tex", opts).map_err(err)?;
-    zip.write_all(flat.as_bytes()).map_err(|e| e.to_string())?;
-    let bbl = cache_dir(name).join("main.bbl");
-    let bbl = if bbl.is_file() { bbl } else { paper.join("main.bbl") };
-    if let Ok(b) = std::fs::read(&bbl) {
-        zip.start_file("main.bbl", opts).map_err(err)?;
-        zip.write_all(&b).map_err(|e| e.to_string())?;
-    }
-    let mut stack = vec![(paper.to_path_buf(), String::new())];
-    while let Some((dir, prefix)) = stack.pop() {
-        for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+    let merged = paper::flatten(paper, paper, &main, &mut Vec::new(), 0);
+
+    // Files to ship, top folder first, each with a name at the top level.
+    let mut files: Vec<(PathBuf, String)> = Vec::new();
+    let mut flat_of: std::collections::HashMap<PathBuf, String> = Default::default();
+    let mut queue = std::collections::VecDeque::from([(paper.to_path_buf(), String::new())]);
+    while let Some((dir, prefix)) = queue.pop_front() {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten().collect();
+        entries.sort_by_key(|e| (e.path().is_dir(), e.file_name()));
+        for e in entries {
             let n = e.file_name().to_string_lossy().to_string();
             let top = prefix.is_empty();
             if n.starts_with('.') || (top && (n == "export" || n == "sections" || APP_FILES.contains(&n.as_str())))
@@ -459,17 +454,131 @@ pub fn build_latex_zip(paper: &Path, name: &str) -> Result<String, String> {
             {
                 continue;
             }
-            let path = format!("{prefix}{n}");
+            let rel = format!("{prefix}{n}");
             if e.path().is_dir() {
-                stack.push((e.path(), format!("{path}/")));
-            } else {
-                zip.start_file(path, opts).map_err(err)?;
-                zip.write_all(&std::fs::read(e.path()).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                queue.push_back((e.path(), format!("{rel}/")));
+                continue;
             }
+            let bytes = std::fs::read(e.path()).map_err(|e| e.to_string())?;
+            // the same name at the top: an identical copy is dropped, another file is renamed
+            let flat = match files.iter().find(|(_, f)| *f == n) {
+                None => n.clone(),
+                Some((p, f)) if std::fs::read(p).is_ok_and(|b| b == bytes) => {
+                    flat_of.insert(e.path(), f.clone());
+                    continue;
+                }
+                Some(_) => rel.replace('/', "-"),
+            };
+            flat_of.insert(e.path(), flat.clone());
+            files.push((e.path(), flat));
         }
+    }
+    let tex = flat_paths(&merged, paper, &flat_of);
+
+    let rel = format!("export/{name}-latex.zip");
+    let dest = export_dir(paper).map_err(|e| e.to_string())?.join(format!("{name}-latex.zip"));
+    let file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let err = |e: zip::result::ZipError| e.to_string();
+    zip.start_file("main.tex", opts).map_err(err)?;
+    zip.write_all(tex.as_bytes()).map_err(|e| e.to_string())?;
+    let bbl = cache_dir(name).join("main.bbl");
+    let bbl = if bbl.is_file() { bbl } else { paper.join("main.bbl") };
+    if let Ok(b) = std::fs::read(&bbl) {
+        zip.start_file("main.bbl", opts).map_err(err)?;
+        zip.write_all(&b).map_err(|e| e.to_string())?;
+    }
+    for (path, flat) in files {
+        zip.start_file(flat, opts).map_err(err)?;
+        zip.write_all(&std::fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     }
     zip.finish().map_err(err)?;
     Ok(rel)
+}
+
+/// Point every file reference in `tex` at its top-level name: figures are
+/// found the way LaTeX finds them; other paths keep their last part.
+/// `\graphicspath` is dropped, since nothing is in a folder any more.
+pub fn flat_paths(tex: &str, paper: &Path, flat_of: &std::collections::HashMap<PathBuf, String>) -> String {
+    const CMDS: &[&str] = &["\\includegraphics", "\\bibliography", "\\bibliographystyle", "\\addbibresource", "\\usepackage", "\\input", "\\include", "\\graphicspath"];
+    let mut out = String::with_capacity(tex.len());
+    let mut i = 0;
+    while i < tex.len() {
+        let Some(at) = tex[i..].find('\\').map(|k| i + k) else { break };
+        out.push_str(&tex[i..at]);
+        let rest = &tex[at..];
+        let Some(cmd) = CMDS.iter().find(|c| rest.starts_with(**c) && !rest[c.len()..].starts_with(|ch: char| ch.is_ascii_alphabetic())) else {
+            out.push('\\');
+            i = at + 1;
+            continue;
+        };
+        // \cmd*[opts]{args}
+        let mut j = at + cmd.len();
+        let b = tex.as_bytes();
+        while j < b.len() && (b[j] == b'*' || b[j] == b' ') {
+            j += 1;
+        }
+        if j < b.len() && b[j] == b'[' {
+            if let Some(e) = tex[j..].find(']') {
+                j += e + 1;
+            }
+        }
+        while j < b.len() && b[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let Some(end) = (j < b.len() && b[j] == b'{').then(|| group_close(tex, j)).flatten() else {
+            out.push_str(&tex[at..j]);
+            i = j;
+            continue;
+        };
+        if *cmd == "\\graphicspath" {
+            i = end + 1;
+            continue;
+        }
+        let arg = &tex[j + 1..end];
+        let new: Vec<String> = arg
+            .split(',')
+            .map(|a| {
+                let t = a.trim();
+                if *cmd == "\\includegraphics" {
+                    if let Some(f) = crate::preview::resolve_figure(paper, t).and_then(|p| flat_of.get(&p)) {
+                        return f.clone();
+                    }
+                }
+                if t.contains('/') { t.rsplit('/').next().unwrap_or(t).to_string() } else { a.to_string() }
+            })
+            .collect();
+        out.push_str(&tex[at..=j]);
+        out.push_str(&new.join(","));
+        out.push('}');
+        i = end + 1;
+    }
+    if i < tex.len() {
+        out.push_str(&tex[i..]);
+    }
+    out
+}
+
+/// Index of the `}` closing the group that opens at `open`.
+fn group_close(s: &str, open: usize) -> Option<usize> {
+    let b = s.as_bytes();
+    let (mut depth, mut i) = (0, open);
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 1,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Pandoc's stderr in a few readable lines. Its multi-line messages (the
@@ -616,6 +725,23 @@ Output written on /tmp/b/main.pdf (5 pages, 12345 bytes).
         assert_eq!(para_at("02-method.tex", text, 6), Some(1));
         assert_eq!(para_at("02-method.tex", text, 4), Some(0));
         assert_eq!(para_at("02-method.tex", text, 2), None);
+    }
+
+    #[test]
+    fn rewrites_paths_for_a_flat_package() {
+        let d = std::env::temp_dir().join(format!("pc-flat-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("figs")).unwrap();
+        std::fs::write(d.join("main.tex"), "\\graphicspath{{figs/}}\n").unwrap();
+        std::fs::write(d.join("figs/a.png"), "x").unwrap();
+        let mut map = std::collections::HashMap::new();
+        map.insert(d.join("figs/a.png"), "figs-a.png".to_string());
+        let tex = "\\graphicspath{{figs/}}\n\\includegraphics[width=3cm]{a}\n\\bibliography{bib/refs,other}\n\\usepackage{sty/my}\n\\includegraphicsx{keep/me}\n";
+        assert_eq!(
+            flat_paths(tex, &d, &map),
+            "\n\\includegraphics[width=3cm]{figs-a.png}\n\\bibliography{refs,other}\n\\usepackage{my}\n\\includegraphicsx{keep/me}\n"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
