@@ -18,6 +18,16 @@ pub fn paragraphs(text: &str) -> Vec<String> {
             continue;
         }
         depth = depth.max(0);
+        // A heading on its own line is a paragraph of its own, so the text or
+        // table after it is recognised on its own (LaTeX output is the same).
+        if depth == 0 && is_heading_line(code) {
+            if !cur.is_empty() {
+                out.push(cur.join("\n"));
+                cur.clear();
+            }
+            out.push(line.to_string());
+            continue;
+        }
         if line.trim().is_empty() {
             if !cur.is_empty() {
                 out.push(cur.join("\n"));
@@ -31,6 +41,29 @@ pub fn paragraphs(text: &str) -> Vec<String> {
         out.push(cur.join("\n"));
     }
     out
+}
+
+/// `\\subsection{Title}`, optionally followed by `\\label{...}`, and nothing else.
+fn is_heading_line(code: &str) -> bool {
+    let t = code.trim();
+    let Some(rest) = ["\\subsubsection", "\\subsection", "\\section"].iter().find_map(|h| t.strip_prefix(h)) else { return false };
+    let rest = rest.strip_prefix('*').unwrap_or(rest);
+    let Some(rest) = rest.strip_prefix('{') else { return false };
+    let mut depth = 1;
+    for (i, c) in rest.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    let after = rest[i + 1..].trim();
+                    return after.is_empty() || (after.starts_with("\\label{") && after.ends_with('}') && after.matches('}').count() == 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Abbreviations that end with a period but do not end a sentence.
@@ -140,6 +173,15 @@ const STOPWORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headings_stand_alone() {
+        let t = "\\subsection{Encoder {and} Decoder} \\label{s:e}\n\\begin{table}\nx\n\\end{table}\nText \\subsection{inline} stays.\n\\paragraph{Run-in} text.";
+        assert_eq!(
+            paragraphs(t),
+            ["\\subsection{Encoder {and} Decoder} \\label{s:e}", "\\begin{table}\nx\n\\end{table}\nText \\subsection{inline} stays.\n\\paragraph{Run-in} text."]
+        );
+    }
 
     #[test]
     fn splits_paragraphs_on_blank_lines() {

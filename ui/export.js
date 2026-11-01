@@ -22,6 +22,15 @@ const PCExport = (() => {
     catch (e) { r = { ok: false, errors: [{ message: e.message }] }; }
     busy = false;
     show(kind, r);
+    // A compile knows every number: refresh labels and citations on the page.
+    if (kind === "pdf" && r.ok) {
+      try {
+        const res = await api(paperUrl());
+        PCTex.setNumbers(res.numbers);
+        state.paper.bibliography = res.bibliography ?? [];
+        render();
+      } catch { /* keep the page as is */ }
+    }
   }
 
   async function open(kind, reveal) {

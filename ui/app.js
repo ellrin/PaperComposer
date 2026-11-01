@@ -70,8 +70,10 @@ const rank = (s) => ({ info: 1, warning: 2, error: 3 }[s] ?? 0);
 async function openPaper(name) {
   try {
     const res = await api(`/api/papers/${encodeURIComponent(name)}`);
-    state.paper = { name, sections: res.sections };
+    state.paper = { name, sections: res.sections, front: res.front ?? "", back: res.back ?? "", bibliography: res.bibliography ?? [] };
     PCTex.setMacros(res.macros ?? {});
+    PCTex.setNumbers(res.numbers);
+    PCTex.setFigureBase(`/api/papers/${encodeURIComponent(name)}/figure`);
     state.cur = { s: 0, p: 0 };
     store.set("pc.paper", name);
   } catch (e) {
@@ -103,7 +105,7 @@ async function saveSection(i) {
 }
 
 function render() {
-  PCTex.numberEquations(sections().flatMap((s) => s.paragraphs));
+  PCTex.number(sections(), state.paper?.front ?? "");
   renderNav(); renderPaper(); renderSide(); renderStatus();
 }
 
@@ -117,7 +119,7 @@ function renderNav() {
     const li = el("li", "sec");
     li.dataset.open = String(open[sec.file] !== false);
     const head = el("button");
-    head.append(el("span", "caret", "▾"), el("span", "", sec.title), el("span", "count", String(sec.paragraphs.length)));
+    head.append(el("span", "caret", "▾"), el("span", "", sec.title), el("span", "count", String(sec.paragraphs.filter((t) => PCTex.stripComments(t).trim()).length)));
     head.onclick = () => {
       const now = li.dataset.open !== "true";
       li.dataset.open = String(now);
@@ -127,14 +129,16 @@ function renderNav() {
     };
     const ol = el("ol", "outline");
     sec.paragraphs.forEach((text, pi) => {
+      // commented-out paragraphs stay on the page (faint %), not in the outline
+      if (!PCTex.stripComments(text).trim()) return;
       const b = el("button");
       b.setAttribute("aria-current", String(si === state.cur.s && pi === state.cur.p));
       const rep = state.reports[si]?.[pi];
       // Label: rendered first line; display equations show their number.
       const t = el("span", "t");
-      const eq = text.match(/\\label\{([^}]*)\}/);
-      if (/^\\begin\{(equation|align|gather|multline)/.test(text.trim())) t.textContent = `式 ${eq && PCTex.labels?.[eq[1]] ? `(${PCTex.labels[eq[1]]})` : ""}`;
-      else t.append(PCTex.render(text.split("\n")[0]));
+      const kind = navKind(text);
+      if (kind) t.textContent = kind;
+      else t.append(PCTex.render(PCTex.stripComments(text).trim().split("\n")[0]));
       b.append(el("span", `status ${rep ? rep.status ?? "" : ""}`), el("span", "i", pad(pi + 1)), t);
       b.onclick = () => { select(si, pi); paraEl(si, pi)?.scrollIntoView({ block: "center", behavior: "smooth" }); };
       const item = el("li");
@@ -146,12 +150,35 @@ function renderNav() {
   });
 }
 
+// Navigator label for a block paragraph: its kind, number and title.
+function navKind(text) {
+  if (!PCTex.stripComments(text).trim()) return "註解";
+  const head = PCTex.heading(text);
+  if (head) return head[1];
+  const t = PCTex.stripComments(text).trim();
+  const env = t.match(/^\\begin\{([a-zA-Z*]+)\}/)?.[1];
+  if (!env) return null;
+  const lab = t.match(/\\label\{([^}]*)\}/)?.[1];
+  const n = lab && PCTex.labels[lab] ? ` ${PCTex.labels[lab]}` : "";
+  const base = env.replace("*", "");
+  if (/^(equation|align|gather|multline|eqnarray|flalign|alignat)$/.test(base)) return `式${n ? ` (${n.trim()})` : ""}`;
+  if (/^(figure|wrapfigure)$/.test(base)) return /\\begin\{tabular/.test(t) && !/\\includegraphics/.test(t) ? `表${n}` : `圖${n}`;
+  if (/^(table|sidewaystable)$/.test(base)) return `表${n}`;
+  if (/^algorithm/.test(base)) return `演算法${n}`;
+  if (/^(itemize|enumerate|description)$/.test(base)) return "清單";
+  if (/^(theorem|lemma|proposition|corollary|definition|remark|assumption|example|proof)$/.test(base)) return `${base[0].toUpperCase()}${base.slice(1)}${n}`;
+  return null;
+}
+
 const paraEl = (si, pi) => document.querySelector(`.para[data-s="${si}"][data-p="${pi}"]`);
 
 function renderPaper() {
   const paper = $("#paper");
   paper.innerHTML = "";
   if (!state.paper) return;
+  PCTex.resetCounters();
+  // main.tex around the sections: title block first, back matter and references last
+  if (state.paper.front.trim()) paper.append(PCTex.frontNode(state.paper.front));
   sections().forEach((sec, si) => {
     const h = el("h2");
     h.append(PCTex.render(sec.title));
@@ -166,12 +193,27 @@ function renderPaper() {
         PCTable.mount(p, si, pi, text);
         return;
       }
-      const block = /\\begin\{(equation|align|gather|multline|eqnarray|displaymath)/.test(text);
-      const p = el(block ? "div" : "p", block ? "para display" : "para");
+      if (!PCTex.stripComments(text).trim()) {
+        // only comments: keep a handle to edit it, nothing to read
+        const p = el("div", "para comment-only", "%");
+        p.title = "註解";
+        p.dataset.s = si;
+        p.dataset.p = pi;
+        p.onclick = () => select(si, pi);
+        p.ondblclick = () => edit(p, si, pi);
+        paper.append(p);
+        return;
+      }
+      const head = PCTex.heading(text);
+      const block = PCTex.isDisplay(text);
+      const whole = block || PCTex.needsWhole(text);
+      const p = el(head ? "div" : block ? "div" : "p", head ? `para head ${head[0]}` : block ? "para display" : "para");
       p.dataset.s = si;
       p.dataset.p = pi;
-      if (block) {
-        // Mixed prose + display math: render as a whole, without sentence marks.
+      if (head) {
+        p.append(PCTex.render(head[1]));
+      } else if (whole) {
+        // Blocks, and prose with comments or line breaks: render as a whole, without sentence marks.
         p.append(PCTex.render(text));
       } else {
         const rep = state.reports[si]?.[pi];
@@ -196,6 +238,9 @@ function renderPaper() {
       paper.append(p);
     }
   });
+  const back = state.paper.back.trim();
+  if (back) { const d = el("div", "tex-back"); d.append(PCTex.render(back)); if (d.textContent.trim()) paper.append(d); }
+  if (state.paper.bibliography.length) paper.append(PCTex.bibliographyNode(state.paper.bibliography));
   markCurrent();
 }
 
@@ -740,8 +785,17 @@ function toggleFileMenu() {
   tpl.setAttribute("aria-label", "模板");
   tpl.append(new Option("空白", ""));
   (state.workspace?.publishers ?? []).forEach((p) => tpl.append(new Option(p, p)));
+  tpl.append(new Option("匯入檔案…", "@file"), new Option("arXiv…", "@arxiv"));
+  const placeholder = () => (input.placeholder = tpl.value === "@arxiv" ? "arXiv 編號或網址，Enter 匯入" : "新論文名稱，Enter 建立");
   tpl.value = store.get("pc.newTemplate", "");
-  tpl.onchange = () => store.set("pc.newTemplate", tpl.value);
+  if (tpl.value.startsWith("@")) tpl.value = "";
+  placeholder();
+  tpl.onchange = () => {
+    if (tpl.value === "@file") { tpl.value = store.get("pc.newTemplate", ""); pickProject(input); return; }
+    if (tpl.value !== "@arxiv") store.set("pc.newTemplate", tpl.value);
+    placeholder();
+    input.focus();
+  };
   input.onkeydown = (e) => { if (e.key === "Enter") createPaper(input, tpl.value); if (e.key === "Escape") m.hidden = true; };
   row.append(icon("plus"), input, tpl);
   m.append(row);
@@ -751,17 +805,52 @@ function toggleFileMenu() {
   m.hidden = false;
 }
 
+// Import a LaTeX project from a file: .zip, .tar.gz or .tex. The name box
+// names it; empty takes the file's name.
+function pickProject(input) {
+  const f = el("input");
+  f.type = "file";
+  f.accept = ".zip,.tar.gz,.tgz,.gz,.tex";
+  f.onchange = async () => {
+    const file = f.files[0];
+    if (!file) return;
+    const name = input.value.trim() || file.name.replace(/\.(tar\.gz|tgz|zip|gz|tex)$/i, "").replace(/[^\p{L}\p{N} ._-]+/gu, "-").replace(/^[.-]+/, "") || "imported";
+    input.disabled = true;
+    flash("匯入中…", 60000);
+    try {
+      const r = await fetch(`/api/papers/import?name=${encodeURIComponent(name)}`, { method: "POST", body: file });
+      if (!r.ok) throw new Error(await r.text());
+      await opened(name);
+    } catch (e) {
+      flash(e.message, 6000);
+    } finally {
+      input.disabled = false;
+    }
+  };
+  f.click();
+}
+
+async function opened(name) {
+  state.workspace = await api("/api/workspace");
+  $("#fileMenu").hidden = true;
+  await openPaper(name);
+  refreshGit();
+  flash(`已建立 ${name}`);
+}
+
 async function createPaper(input, template) {
   const name = input.value.trim();
   if (!name) return;
   input.disabled = true;
   try {
+    if (template === "@arxiv") {
+      flash("從 arXiv 下載中…", 60000);
+      const r = await api("/api/papers/import-arxiv", { id: name });
+      await opened(r.name);
+      return;
+    }
     await api("/api/papers", { name, template: template || null });
-    state.workspace = await api("/api/workspace");
-    $("#fileMenu").hidden = true;
-    await openPaper(name);
-    refreshGit();
-    flash(`已建立 ${name}`);
+    await opened(name);
   } catch (e) {
     flash(e.message, 6000);
     input.disabled = false;

@@ -160,7 +160,8 @@ const PCTable = (() => {
     const cap = () => {
       if (!t.caption && !t.label) return null;
       const c = el("figcaption");
-      c.append(el("b", "", "Table "), PCTex.render(t.caption ?? ""));
+      const n = t.label ? PCTex.labels[t.label] : null;
+      c.append(el("b", "", n ? `Table ${n}. ` : "Table. "), PCTex.render(t.caption ?? ""));
       return c;
     };
     if (!t.caption_below) { const c = cap(); if (c) fig.append(c); }
@@ -201,8 +202,15 @@ const PCTable = (() => {
     });
     fig.append(table);
     if (t.caption_below) { const c = cap(); if (c) fig.append(c); }
-    const notes = [...t.before, ...t.after].filter((l) => !/^\\(vspace|bigskip|medskip|smallskip)/.test(l));
-    if (notes.length) fig.append(el("div", "tex-notes", notes.join(" ")));
+    // Lines around the tabular: layout commands vanish, notes are shown.
+    const notes = [...t.before, ...t.after].map((l) => PCTex.stripComments(l).trim())
+      .filter((l) => l && !/^\\(begin|end)\{(center|flushleft|flushright|small|footnotesize|scriptsize|adjustbox|threeparttable|minipage)\}/.test(l))
+      .filter((l) => !/^(\\(vspace\*?|hspace\*?|bigskip|medskip|smallskip|centering|small|footnotesize|scriptsize|tiny|normalsize|setlength|renewcommand|resizebox|scalebox|captionsetup|label)\b[^a-zA-Z]?[^]*|[{}]|\}\s*%?)$/.test(l) || /\\(footnote|tnote|item)/.test(l));
+    if (notes.length) {
+      const n = el("div", "tex-notes");
+      n.append(PCTex.render(notes.join("\n")));
+      if (n.textContent.trim()) fig.append(n);
+    }
     p.append(fig);
     if (active === box) p.append(toolbar(box));
   }

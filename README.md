@@ -137,7 +137,15 @@ tlmgr search --global --file /xxx.sty
 - **匯入 PDF 或 DOI**：文獻頁會列出 PDF 資料夾裡還沒匯入的檔案。匯入時從 PDF 前兩頁讀出 DOI（跨行斷開的也會接回），書目向 Crossref（doi.org）取得，摘要依序向 OpenAlex、Semantic Scholar、PDF 本身的 Abstract 段落取得；**書目不經過模型**。模型只負責寫中文簡介、一句話，並從你的標籤清單挑標籤；頂會、頂刊依 `profile/venues.csv`（`pattern,tag`，沒有時用內建清單）判斷。抓到的標題若和 PDF 內容對不上（例如 DOI 被截斷而對到整本論文集），會標示並請你更正 DOI。每一篇都要你確認後才加入。
 - **插入引用**：上方「插入 → 引用…」，搜尋或用標籤篩選、可多選，插在游標處（沒有在編輯時插在段落句尾），可順便記下用途。
 - **用 Claude 找新文獻**（插入引用視窗的放大鏡；沒連 Claude 時是灰的）：預設請求是「幫我找關於『段落開頭』的文獻」，可再選標籤引導（回顧→只找 review；新算法→近 3 年；經典算法→依引用數排序；頂會／頂刊→依期刊清單篩選）。Claude 把請求轉成搜尋關鍵字，**文獻一律來自 OpenAlex**（都有 DOI、排除只有預印本的），Claude 再從候選中排序並寫一句為什麼適合；它不能新增或改寫候選。點標題開啟 DOI 頁面，有開放取用版本可直接開 PDF；「加入」會向 Crossref 取得書目、寫好簡介與標籤後放進文獻庫，並勾選待插入。
-- **每篇論文的 `.bib` 自動產生**：只包含這篇有引用的文獻，檔名沿用 `main.tex` 的 `\bibliography{…}`。論文原有、不是 App 產生的 `.bib` 會先併入文獻庫，不會遺失。
+- **引用一定送得到 BibTeX，作者的 `.bib` 一律不改寫**：`\bibliography{…}` 列出的每個檔案都會讀取；文獻庫裡有、論文的 `.bib` 沒有的引用，寫到 App 管理的 `pc-refs.bib` 並自動加進 `\bibliography{…}`。論文沒有自己的 `.bib` 時，產生一個只含這篇引用的檔案。
+
+## 匯入現有的論文
+
+論文選單的模板欄選「匯入檔案…」或「arXiv…」：可匯入 `.zip`、`.tar.gz`、單一 `.tex`，或直接輸入 arXiv 編號／網址（下載作者上傳的 LaTeX 原始檔）。App 找出主檔（arXiv 依 `00README.json` 指定的檔案），展開 `\input`／`\include`／`\subfile`，每個 `\section`（含附錄）成為一個可編輯的章節檔；標題、摘要、參考文獻等章節之間的內容依原順序留在 `main.tex`。`%` 註解原樣保留，圖片、樣式檔、`.bib` 一起帶過來；只附 `.bbl` 的論文直接使用它。
+
+以 4 篇 arXiv 論文實測（NeurIPS〈Attention Is All You Need〉、IEEE TMI、IEEE TSP、Springer BIT），匯出的 PDF 頁數與 arXiv 版完全相同，逐頁比對只有字型版本造成的細微差異。
+
+**編輯畫面是預覽，PDF 才是成品**：編輯畫面用 KaTeX 與 App 自己的轉換呈現論文（方程式、圖片、表格、清單、定理、演算法、標題摘要、參考文獻），以便直接在頁面上修改，外觀接近但不保證與 PDF 完全相同。匯出 PDF 一律用期刊的 class 與真正的 LaTeX 編譯。編譯過一次後，畫面上的方程式、圖表、章節與引用編號會改用 LaTeX 算出的實際編號（讀取 `.aux`）。PDF 與 EPS 圖片用 Ghostscript（macOS 沒有時用內建的 `sips`）轉成預覽圖。
 
 ## 匯出
 
@@ -215,6 +223,9 @@ scripts/            Git hooks
 | GET / PUT | `/api/tables/{file}` | 讀寫資料庫 CSV（句型、片語、用詞、規則、範例、公式） |
 | POST | `/api/papers/{name}/export` `{ kind: "pdf" \| "docx" }` | 匯出：頁數、錯誤（含位置）、找不到的引用與標籤 |
 | POST | `/api/papers/{name}/export/open` `{ kind, reveal }` | 開啟匯出的檔案，或在資料夾中顯示 |
+| POST | `/api/papers/import?name=` （本文為 .zip／.tar.gz／.tex） | 匯入現有的 LaTeX 專案 |
+| POST | `/api/papers/import-arxiv` `{ id, name? }` | 從 arXiv 匯入原始檔 |
+| GET | `/api/papers/{name}/figure?path=` | 圖片預覽（PDF／EPS 轉 PNG） |
 | POST | `/api/decompose` `{ text, section }` | 把句子或段落拆成句型與片語建議 |
 | GET | `/api/claude` | Claude 連線狀態 |
 | POST | `/api/settings/claude` `{ key, model }` | 存入或移除 API key、選擇模型 |

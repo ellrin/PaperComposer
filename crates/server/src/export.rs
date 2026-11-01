@@ -134,6 +134,10 @@ pub fn parse_log(log: &str) -> LogInfo {
         let hint = hint_for(&msg);
         info.errors.push(Problem { file, line: line_no, message: msg, context, hint, para: None });
     }
+    // "Emergency stop" only repeats that an earlier error halted the run.
+    if info.errors.len() > 1 {
+        info.errors.retain(|e| !e.message.starts_with("Emergency stop"));
+    }
     info
 }
 
@@ -216,7 +220,7 @@ fn mirror_dirs(src: &Path, dst: &Path) {
 /// Fill in which paragraph each located error points at.
 fn locate(paper: &Path, errors: &mut [Problem]) {
     for e in errors {
-        if let (Some(f), Some(n)) = (&e.file, e.line) {
+        if let (Some(f), Some(n)) = (e.file.as_ref().filter(|f| f.starts_with("sections/")), e.line) {
             if let Ok(text) = std::fs::read_to_string(paper.join(f)) {
                 let name = Path::new(f).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                 e.para = para_at(&name, &text, n);
@@ -227,7 +231,7 @@ fn locate(paper: &Path, errors: &mut [Problem]) {
 
 /// Compile `main.tex` to `export/<name>.pdf`: engine, bibliography, then
 /// engine again until cross-references settle (at most four runs).
-pub async fn build_pdf(paper: &Path, name: &str) -> Result<Report, String> {
+pub async fn build_pdf(paper: &Path, name: &str, prebuilt_bbl: bool) -> Result<Report, String> {
     let start = Instant::now();
     let main = std::fs::read_to_string(paper.join("main.tex")).map_err(|_| "論文沒有 main.tex".to_string())?;
     let engine = engine_for(&main);
@@ -236,6 +240,9 @@ pub async fn build_pdf(paper: &Path, name: &str) -> Result<Report, String> {
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
     mirror_dirs(paper, &out);
     let _ = std::fs::remove_file(out.join("main.pdf"));
+    if prebuilt_bbl {
+        std::fs::copy(paper.join("main.bbl"), out.join("main.bbl")).map_err(|e| e.to_string())?;
+    }
     let latex = |out: &Path| {
         let mut c = Command::new(&tex);
         c.current_dir(paper)
@@ -262,7 +269,7 @@ pub async fn build_pdf(paper: &Path, name: &str) -> Result<Report, String> {
             break;
         }
         if pass == 0 {
-            if let Some(b) = bib_tool(&main) {
+            if let Some(b) = bib_tool(&main).filter(|_| !prebuilt_bbl) {
                 report.warnings.extend(run_bib(b, paper, &out).await?);
                 continue;
             }
@@ -304,12 +311,29 @@ async fn run_bib(prog: &str, paper: &Path, out: &Path) -> Result<Vec<String>, St
     Ok(warn)
 }
 
-/// The useful lines of a .blg file.
+/// The useful lines of a .blg file, with where the problem is.
 pub fn bib_warnings(blg: &str) -> Vec<String> {
     let mut v = Vec::new();
-    for l in blg.lines() {
-        // Missing entries already show up as undefined citations.
-        let msg = if l.contains("I couldn't open") || l.contains("I found no") || l.starts_with("ERROR") {
+    let lines: Vec<&str> = blg.lines().collect();
+    for (i, l) in lines.iter().enumerate() {
+        // "Repeated entry---line 494 of file references.bib", then " : @article{Key"
+        let at = l.split_once("---line ").and_then(|(what, rest)| {
+            let (n, file) = rest.split_once(" of file ")?;
+            Some((what, n.trim(), file.trim()))
+        });
+        let msg = if let Some(f) = l.strip_prefix("I couldn't open style file ") {
+            format!("缺少 {f}：tlmgr search --global --file /{f}")
+        } else if let Some((what, n, file)) = at {
+            let key = lines.get(i + 1).and_then(|x| x.split_once('{')).map(|(_, k)| k.trim().trim_end_matches(',').to_string()).filter(|k| !k.is_empty());
+            let what = if what.starts_with("Repeated entry") {
+                format!("重複的條目{}", key.map(|k| format!(" {k}")).unwrap_or_default())
+            } else if what.starts_with("I was expecting") {
+                "格式錯誤（可能少了逗號或括號）".to_string()
+            } else {
+                what.to_string()
+            };
+            format!("{file} 第 {n} 行：{what}")
+        } else if l.contains("I couldn't open") || l.contains("I found no") || l.starts_with("ERROR") {
             l.trim().to_string()
         } else {
             continue;
@@ -324,14 +348,18 @@ pub fn bib_warnings(blg: &str) -> Vec<String> {
 /// Convert to `export/<name>.docx` with Pandoc. A `reference.docx` in the
 /// paper folder (copied from the publisher template) sets the Word styles,
 /// and a `.csl` file there sets the citation style.
-pub async fn build_docx(paper: &Path, name: &str, bib: Option<&str>) -> Result<Report, String> {
+pub async fn build_docx(paper: &Path, name: &str, bibs: &[String]) -> Result<Report, String> {
     let start = Instant::now();
     let pandoc = tool("pandoc").ok_or("pandoc-missing")?;
     let dest = export_dir(paper).map_err(|e| e.to_string())?.join(format!("{name}.docx"));
     let mut c = Command::new(pandoc);
     c.current_dir(paper).args(["main.tex", "--from=latex", "--to=docx", "--resource-path=."]).arg("-o").arg(&dest);
-    if let Some(b) = bib.filter(|b| paper.join(b).is_file()) {
-        c.arg("--citeproc").arg(format!("--bibliography={b}"));
+    let bibs: Vec<&String> = bibs.iter().filter(|b| paper.join(b).is_file()).collect();
+    if !bibs.is_empty() {
+        c.arg("--citeproc");
+        for b in bibs {
+            c.arg(format!("--bibliography={b}"));
+        }
         if let Some(csl) = first_with_ext(paper, "csl") {
             c.arg(format!("--csl={csl}"));
         }
@@ -453,5 +481,8 @@ Output written on /tmp/b/main.pdf (5 pages, 12345 bytes).
     fn reads_bibtex_warnings() {
         let blg = "Warning--I didn't find a database entry for \"nokey\"\nWarning--I didn't find a database entry for \"nokey\"\nI couldn't open database file refs.bib\n";
         assert_eq!(bib_warnings(blg), ["I couldn't open database file refs.bib"]);
+        assert_eq!(bib_warnings("I couldn't open style file IEEEtran.bst\n"), ["缺少 IEEEtran.bst：tlmgr search --global --file /IEEEtran.bst"]);
+        let blg = "Repeated entry---line 494 of file references.bib\n : @article{Tropp2007Signal\n :                         ,\nI was expecting a `,' or a `}'---line 512 of file references.bib\n";
+        assert_eq!(bib_warnings(blg), ["references.bib 第 494 行：重複的條目 Tropp2007Signal", "references.bib 第 512 行：格式錯誤（可能少了逗號或括號）"]);
     }
 }

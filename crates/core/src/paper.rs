@@ -349,13 +349,13 @@ pub fn create_paper_from_template(papers: &Path, name: &str, template: &Path) ->
     let bytes = std::fs::read(template.join("sample.tex")).map_err(|_| "模板裡沒有 sample.tex".to_string())?;
     // Some publishers still ship Latin-1 samples; read those byte for byte.
     let sample = String::from_utf8(bytes).unwrap_or_else(|e| e.into_bytes().iter().map(|&b| b as char).collect());
-    let split = split_sample(&sample).ok_or("sample.tex 裡找不到 \\begin{document}")?;
+    let split = split_sample(&sample, false).ok_or("sample.tex 裡找不到 \\begin{document}")?;
     let dir = papers.join(name);
     if dir.exists() {
         return Err(format!("已經有一篇叫 {name} 的論文"));
     }
     let io = |e: std::io::Error| e.to_string();
-    std::fs::create_dir_all(dir.join("sections")).map_err(io)?;
+    std::fs::create_dir_all(&dir).map_err(io)?;
     copy_support(template, &dir).map_err(io)?;
     // BibTeX only looks next to main.tex: lift styles kept in bst/ (Springer).
     if let Ok(rd) = std::fs::read_dir(template.join("bst")) {
@@ -366,78 +366,256 @@ pub fn create_paper_from_template(papers: &Path, name: &str, template: &Path) ->
         }
     }
 
-    let mut inputs = String::new();
-    for (i, (title, tail, body)) in split.sections.iter().enumerate() {
-        let file = format!("{:02}-{}.tex", i + 1, slug(title));
-        let mut s = parse_section(&file, &format!("\\section{{{title}}}{tail}\n{body}"));
-        s.file = file.clone();
-        write_atomic(&dir.join("sections").join(&file), &render_section(&s)).map_err(io)?;
-        inputs += &format!("\\input{{sections/{}}}\n", file.trim_end_matches(".tex"));
-    }
-    let main = format!("{}\\begin{{document}}\n{}\n{}\n{}\\end{{document}}\n", split.preamble, split.front.trim_end(), inputs, split.back);
-    write_atomic(&dir.join("main.tex"), &main).map_err(io)?;
+    write_split(&dir, &split)?;
     Ok(dir)
+}
+
+/// One file per section under `sections/`, and main.tex around them.
+fn write_split(dir: &Path, split: &Sample) -> Result<(), String> {
+    let io = |e: std::io::Error| e.to_string();
+    std::fs::create_dir_all(dir.join("sections")).map_err(io)?;
+    // main.tex keeps everything between sections in its place; each section
+    // becomes an \\input of its own file.
+    let mut doc = String::new();
+    let mut i = 0;
+    for piece in &split.pieces {
+        match piece {
+            Piece::Text(t) => doc += t,
+            Piece::Section { title, tail, body } => {
+                i += 1;
+                let file = format!("{:02}-{}.tex", i, slug(title));
+                let mut s = parse_section(&file, &format!("\\section{{{title}}}{tail}\n{body}"));
+                s.file = file.clone();
+                write_atomic(&dir.join("sections").join(&file), &render_section(&s)).map_err(io)?;
+                doc += &format!("\\input{{sections/{}}}\n", file.trim_end_matches(".tex"));
+            }
+        }
+    }
+    let main = format!("{}\\begin{{document}}{}\\end{{document}}\n", split.preamble, doc.trim_end().to_string() + "\n");
+    write_atomic(&dir.join("main.tex"), &main).map_err(io)
+}
+
+/// Read a .tex file; some are still Latin-1, read those byte for byte.
+fn read_tex(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    Some(String::from_utf8(bytes).unwrap_or_else(|e| e.into_bytes().iter().map(|&b| b as char).collect()))
+}
+
+/// The project's main file: a .tex with both \documentclass and
+/// \begin{document} (main.tex or ms.tex first, then the largest).
+pub fn find_main_tex(src: &Path) -> Option<PathBuf> {
+    // arXiv names the file it compiles in 00README.json
+    if let Some(top) = std::fs::read_to_string(src.join("00README.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|j| {
+            j["sources"].as_array()?.iter().find(|s| s["usage"] == "toplevel")?["filename"].as_str().map(String::from)
+        })
+        .filter(|f| !f.contains("..") && !f.starts_with('/'))
+    {
+        let p = src.join(top);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let mut found: Vec<(bool, u64, PathBuf)> = Vec::new();
+    let mut stack = vec![src.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "tex") {
+                let Some(t) = read_tex(&p) else { continue };
+                let code: String = t.lines().map(strip_comment).collect::<Vec<_>>().join("\n");
+                if document_class(&code).is_some_and(|c| c != "subfiles" && c != "standalone") && code.contains("\\begin{document}") {
+                    let n = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+                    let size = t.len() as u64;
+                    found.push((matches!(n.as_str(), "main.tex" | "ms.tex" | "paper.tex"), size, p));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    found.into_iter().next().map(|f| f.2)
+}
+
+/// The class in `\documentclass[opts]{class}`.
+fn document_class(code: &str) -> Option<&str> {
+    let rest = code[code.find("\\documentclass")? + "\\documentclass".len()..].trim_start();
+    let rest = if rest.starts_with('[') { &rest[rest.find(']')? + 1..] } else { rest };
+    braced(rest.trim_start()).map(|(c, _)| c.trim())
+}
+
+/// Replace `\input{x}`, `\include{x}` and `\subfile{x}` with the file's
+/// text, recursively; `used` collects the files taken in. Commented-out
+/// commands and files outside `root` are left alone.
+pub fn flatten(root: &Path, base: &Path, text: &str, used: &mut Vec<PathBuf>, depth: usize) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let code = strip_comment(line);
+        let mut rest = line;
+        let mut done = 0;
+        loop {
+            let hit = ["\\input{", "\\include{", "\\subfile{"]
+                .iter()
+                .filter_map(|c| code[done..].find(c).map(|i| (done + i, *c)))
+                .min_by_key(|h| h.0);
+            let Some((at, cmd)) = hit else { break };
+            let after = &line[at + cmd.len() - 1..];
+            let Some((arg, _)) = braced(after) else { break };
+            let end = at + cmd.len() + arg.len() + 1;
+            let file = resolve_tex(root, base, arg.trim());
+            match file.filter(|_| depth < 10).and_then(|f| read_tex(&f).map(|t| (f, t))) {
+                Some((f, t)) => {
+                    out += &line[line.len() - rest.len()..at];
+                    let body = match (t.find("\\begin{document}"), t.rfind("\\end{document}")) {
+                        // a subfile: only what is inside its document
+                        (Some(b), Some(e)) if b < e => t[b + "\\begin{document}".len()..e].to_string(),
+                        _ => t,
+                    };
+                    used.push(f.clone());
+                    let inner = flatten(root, f.parent().unwrap_or(root), &body, used, depth + 1);
+                    out += inner.trim_end_matches('\n');
+                    rest = &line[end..];
+                }
+                None => {}
+            }
+            done = end;
+        }
+        out += rest;
+        out.push('\n');
+    }
+    out
+}
+
+fn resolve_tex(root: &Path, base: &Path, arg: &str) -> Option<PathBuf> {
+    if arg.contains("..") || arg.starts_with('/') {
+        return None;
+    }
+    for dir in [base, root] {
+        for name in [arg.to_string(), format!("{arg}.tex")] {
+            let p = dir.join(&name);
+            if p.is_file() && p.extension().is_some_and(|x| x == "tex") {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Build output, not sources.
+const BUILD_EXT: &[&str] = &["aux", "log", "out", "blg", "fls", "fdb_latexmk", "synctex.gz", "toc", "lof", "lot", "nav", "snm", "vrb"];
+
+/// Create `papers/<name>/` from an existing LaTeX project in `src`: the main
+/// file and everything it inputs become main.tex plus one file per section
+/// (comments kept), and every other file (figures, styles, .bib) is copied.
+/// A .bbl next to the main file comes along as main.bbl.
+pub fn import_paper(papers: &Path, name: &str, src: &Path) -> Result<PathBuf, String> {
+    let name = name.trim();
+    if !safe_name(name) {
+        return Err("名稱只能用文字、數字、空格、- _ .".into());
+    }
+    let main_path = find_main_tex(src).ok_or("找不到主檔（有 \\documentclass 與 \\begin{document} 的 .tex）")?;
+    let base = main_path.parent().unwrap_or(src).to_path_buf();
+    let mut used = vec![main_path.clone()];
+    let text = flatten(&base, &base, &read_tex(&main_path).unwrap_or_default(), &mut used, 0);
+    let split = split_sample(&text, true).ok_or("主檔裡找不到 \\begin{document}")?;
+    let dir = papers.join(name);
+    if dir.exists() {
+        return Err(format!("已經有一篇叫 {name} 的論文"));
+    }
+    let io = |e: std::io::Error| e.to_string();
+    std::fs::create_dir_all(&dir).map_err(io)?;
+    copy_project(&base, &dir, &used, false).map_err(io)?;
+    let bbl = main_path.with_extension("bbl");
+    if bbl.is_file() {
+        std::fs::copy(&bbl, dir.join("main.bbl")).map_err(io)?;
+    }
+    write_split(&dir, &split)?;
+    Ok(dir)
+}
+
+/// Copy a project's files except the .tex files merged into main.tex, build
+/// output, and any .tex under sections/ (that folder belongs to the app).
+fn copy_project(from: &Path, to: &Path, used: &[PathBuf], in_sections: bool) -> std::io::Result<()> {
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let p = e.path();
+        let n = e.file_name().to_string_lossy().to_string();
+        if n.starts_with('.') || used.contains(&p) || BUILD_EXT.iter().any(|x| n.ends_with(&format!(".{x}"))) {
+            continue;
+        }
+        if e.file_type()?.is_dir() {
+            let d = to.join(&n);
+            std::fs::create_dir_all(&d)?;
+            copy_project(&p, &d, used, in_sections || n == "sections")?;
+        } else if !(in_sections && n.ends_with(".tex")) && !n.ends_with(".bbl") {
+            std::fs::copy(&p, to.join(&n))?;
+        }
+    }
+    Ok(())
 }
 
 struct Sample {
     preamble: String,
-    front: String,
-    /// (title, rest of the \section line, body without comment lines)
-    sections: Vec<(String, String, String)>,
-    back: String,
+    /// The document in order: text that stays in main.tex, and sections.
+    pieces: Vec<Piece>,
 }
 
-/// Split a single-file sample into preamble / front matter / sections /
-/// back matter. Back matter starts at the bibliography or appendices.
-fn split_sample(src: &str) -> Option<Sample> {
+enum Piece {
+    Text(String),
+    /// Title, rest of the \\section line, body (comment lines dropped for templates).
+    Section { title: String, tail: String, body: String },
+}
+
+/// Split a single-file document into preamble and pieces. A section runs to
+/// the next \\section or to back matter (bibliography, \\appendix, ...);
+/// sections after back matter, such as appendices, are sections too.
+fn split_sample(src: &str, keep_comments: bool) -> Option<Sample> {
     let begin = src.find("\\begin{document}")?;
     let preamble = src[..begin].to_string();
     let after = &src[begin + "\\begin{document}".len()..];
     let end = after.rfind("\\end{document}").unwrap_or(after.len());
     let doc = &after[..end];
 
-    // Line-based walk over the document, ignoring commented-out lines when
-    // looking for structure.
-    let back_marks = ["\\appendix", "\\appendices", "\\begin{appendices}", "\\bibliography", "\\printbibliography", "\\begin{thebibliography}", "\\backmatter", "\\bibliographystyle"];
-    let mut front = String::new();
-    let mut back = String::new();
-    let mut sections: Vec<(String, String, String)> = Vec::new();
-    let mut in_back = false;
+    let back_marks = ["\\appendix", "\\appendices", "\\begin{appendices}", "\\end{appendices}", "\\bibliography", "\\printbibliography", "\\begin{thebibliography}", "\\backmatter", "\\bibliographystyle", "\\bmhead", "\\begin{IEEEbiography", "\\EOD"];
+    let mut pieces: Vec<Piece> = vec![Piece::Text(String::new())];
+    let mut in_bib = false;
     for line in doc.lines() {
         let code = strip_comment(line).trim();
-        if in_back {
-            back += line;
-            back.push('\n');
-            continue;
-        }
-        if back_marks.iter().any(|m| code.starts_with(m)) {
-            in_back = true;
-            back += line;
-            back.push('\n');
-            continue;
-        }
-        if code.starts_with("\\section") && !code.starts_with("\\section*") {
+        if in_bib {
+            if code.contains("\\end{thebibliography}") {
+                in_bib = false;
+            }
+        } else if code.starts_with("\\section") && !code.starts_with("\\section*") {
             if let Some((t, rest)) = code.find('{').and_then(|i| braced(&code[i..])) {
-                sections.push((t.to_string(), rest.trim().to_string(), String::new()));
+                pieces.push(Piece::Section { title: t.to_string(), tail: rest.trim().to_string(), body: String::new() });
                 continue;
             }
+        } else if back_marks.iter().any(|m| code.starts_with(m)) {
+            in_bib = code.starts_with("\\begin{thebibliography}");
+            if matches!(pieces.last(), Some(Piece::Section { .. })) {
+                pieces.push(Piece::Text(String::new()));
+            }
         }
-        match sections.last_mut() {
-            Some((_, _, body)) => {
+        match pieces.last_mut() {
+            Some(Piece::Section { body, .. }) => {
                 // Drop pure comment lines: samples are full of instructions.
-                if line.trim_start().starts_with('%') {
+                if !keep_comments && line.trim_start().starts_with('%') {
                     continue;
                 }
                 body.push_str(line);
                 body.push('\n');
             }
-            None => {
-                front += line;
-                front.push('\n');
+            Some(Piece::Text(t)) => {
+                t.push_str(line);
+                t.push('\n');
             }
+            None => {}
         }
     }
-    Some(Sample { preamble, front, sections, back })
+    Some(Sample { preamble, pieces })
 }
 
 fn slug(title: &str) -> String {
@@ -513,6 +691,58 @@ mod tests {
         assert_eq!(s.tail, "\\label{sec:res}");
         let out = render_section(&s);
         assert!(out.starts_with("\\section{Results for $\\mathbb{R}^{n}$}\\label{sec:res}\n"), "{out}");
+    }
+
+    #[test]
+    fn appendices_become_sections_in_place() {
+        let src = "\\documentclass{article}\n\\begin{document}\n\\maketitle\n\\section{Intro}\nA.\n\\appendices\n\\section{Proof}\\label{app:a}\nB.\n\\bibliographystyle{plain}\n\\begin{thebibliography}{1}\n\\bibitem{x} X.\n\\end{thebibliography}\n\\section*{Extra}\n\\section{Late}\nC.\n\\end{document}\n";
+        let root = std::env::temp_dir().join(format!("pc-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/main.tex"), src).unwrap();
+        let dir = import_paper(&root.join("papers"), "P", &root.join("src")).unwrap();
+        let secs = load_paper(&dir);
+        assert_eq!(secs.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), ["Intro", "Proof", "Late"]);
+        assert_eq!(secs[1].tail, "\\label{app:a}");
+        let main = std::fs::read_to_string(dir.join("main.tex")).unwrap();
+        let order: Vec<usize> = ["\\maketitle", "sections/01-intro", "\\appendices", "sections/02-proof", "\\bibitem{x}", "\\section*{Extra}", "sections/03-late", "\\end{document}"]
+            .iter()
+            .map(|m| main.find(m).unwrap_or_else(|| panic!("{m} missing in {main}")))
+            .collect();
+        assert!(order.windows(2).all(|w| w[0] < w[1]), "{main}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn imports_a_multi_file_project() {
+        let root = std::env::temp_dir().join(format!("pc-import-{}", std::process::id()));
+        let src = root.join("src");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(src.join("figs")).unwrap();
+        std::fs::create_dir_all(src.join("sections")).unwrap();
+        std::fs::write(src.join("ms.tex"), "\\documentclass{article}\n\\begin{document}\n\\title{T}\n\\section{Intro}\n\\input{intro}\n\\section{Method} \\label{sec:m}\n\\input{sections/method}\n% \\input{unused}\n\\bibliographystyle{plain}\n\\bibliography{refs}\n\\end{document}\n").unwrap();
+        std::fs::write(src.join("intro.tex"), "First % a note\nparagraph.\n\nSecond.\n").unwrap();
+        std::fs::write(src.join("sections/method.tex"), "We \\input{eq} here.\n").unwrap();
+        std::fs::write(src.join("sections/eq.tex"), "$x$").unwrap();
+        std::fs::write(src.join("sections/old.tex"), "unused").unwrap();
+        std::fs::write(src.join("unused.tex"), "x").unwrap();
+        std::fs::write(src.join("ms.bbl"), "\\begin{thebibliography}{1}\\end{thebibliography}").unwrap();
+        std::fs::write(src.join("figs/a.png"), "png").unwrap();
+        std::fs::write(src.join("ms.aux"), "").unwrap();
+        // a decoy with a bigger body is ignored when arXiv names the top-level file
+        std::fs::write(src.join("old.tex"), format!("\\documentclass{{article}}\\begin{{document}}{}\\end{{document}}", "x".repeat(5000))).unwrap();
+        std::fs::write(src.join("00README.json"), r#"{"sources":[{"usage":"toplevel","filename":"ms.tex"}]}"#).unwrap();
+        let dir = import_paper(&root.join("papers"), "P", &src).unwrap();
+        let secs = load_paper(&dir);
+        assert_eq!(secs.len(), 2);
+        assert_eq!(secs[0].paragraphs, ["First % a note\nparagraph.", "Second."], "comments are kept");
+        assert_eq!(secs[1].tail, "\\label{sec:m}");
+        assert_eq!(secs[1].paragraphs, ["We $x$ here.\n% \\input{unused}"], "nested input relative to its file");
+        assert!(dir.join("figs/a.png").is_file() && dir.join("main.bbl").is_file() && dir.join("unused.tex").is_file());
+        assert!(!dir.join("intro.tex").exists() && !dir.join("ms.aux").exists() && !dir.join("sections/old.tex").exists());
+        let main = std::fs::read_to_string(dir.join("main.tex")).unwrap();
+        assert!(main.contains("\\bibliography{refs}"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
