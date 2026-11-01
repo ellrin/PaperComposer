@@ -505,7 +505,7 @@ fn resolve_tex(root: &Path, base: &Path, arg: &str) -> Option<PathBuf> {
 }
 
 /// Build output, not sources.
-const BUILD_EXT: &[&str] = &["aux", "log", "out", "blg", "fls", "fdb_latexmk", "synctex.gz", "toc", "lof", "lot", "nav", "snm", "vrb"];
+pub const BUILD_EXT: &[&str] = &["aux", "log", "out", "blg", "fls", "fdb_latexmk", "synctex.gz", "toc", "lof", "lot", "nav", "snm", "vrb"];
 
 /// Create `papers/<name>/` from an existing LaTeX project in `src`: the main
 /// file and everything it inputs become main.tex plus one file per section

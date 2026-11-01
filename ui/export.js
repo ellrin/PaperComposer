@@ -3,7 +3,7 @@
 // time, or the errors with a jump to the paragraph each one is in.
 
 const PCExport = (() => {
-  const KIND = { pdf: "PDF", docx: "Word" };
+  const KIND = { pdf: "PDF", docx: "Word", latex: "LaTeX" };
   let busy = false;
   let lastKind = "pdf";
 
@@ -23,7 +23,7 @@ const PCExport = (() => {
     busy = false;
     show(kind, r);
     // A compile knows every number: refresh labels and citations on the page.
-    if (kind === "pdf" && r.ok) {
+    if (kind !== "docx" && r.ok) {
       try {
         const res = await api(paperUrl());
         PCTex.setNumbers(res.numbers);
@@ -71,11 +71,11 @@ const PCExport = (() => {
     const head = el("div", "ex-head");
     head.append(el("b", "", KIND[kind]));
     if (!r) {
-      head.append(el("span", "ex-state busy", kind === "pdf" ? "編譯中…" : "轉換中…"));
+      head.append(el("span", "ex-state busy", kind === "docx" ? "轉換中…" : "編譯中…"));
     } else if (r.ok) {
       const facts = [r.pages ? `${r.pages} 頁` : "", `${r.seconds} 秒`].filter(Boolean).join(" · ");
       const go = el("button", "primary small", "開啟");
-      go.onclick = () => { close(); open(kind, false); };
+      go.onclick = () => { close(); open(kind, kind === "latex"); };
       head.append(el("span", "ex-state ok", facts), go, iconButton("folder", "在資料夾中顯示", () => open(kind, true)));
     } else {
       head.append(el("span", "ex-state bad", "失敗"));

@@ -1269,6 +1269,17 @@ async fn export_paper(State(s): State<Shared>, AxPath(name): AxPath<String>, Jso
     let res = match b.kind.as_str() {
         "pdf" => export::build_pdf(&dir, &name, prebuilt).await,
         "docx" => export::build_docx(&dir, &name, bib.as_ref().map(|b| b.files.as_slice()).unwrap_or_default()).await,
+        // compile first: the package must build, and carries the fresh .bbl
+        "latex" => match export::build_pdf(&dir, &name, prebuilt).await {
+            Ok(mut r) if r.ok => match export::build_latex_zip(&dir, &name) {
+                Ok(f) => {
+                    r.file = Some(f);
+                    Ok(r)
+                }
+                Err(e) => Err(e),
+            },
+            other => other,
+        },
         _ => return bad("unknown export kind"),
     };
     match res {
@@ -1294,10 +1305,11 @@ struct OpenExport {
 
 async fn open_export(State(s): State<Shared>, AxPath(name): AxPath<String>, Json(b): Json<OpenExport>) -> impl IntoResponse {
     let dir = match paper_dir(&s, &name).await { Ok(d) => d, Err(r) => return r };
-    if !matches!(b.kind.as_str(), "pdf" | "docx") {
-        return bad("unknown export kind");
-    }
-    let f = dir.join("export").join(format!("{name}.{}", b.kind));
+    let f = dir.join("export").join(match b.kind.as_str() {
+        "pdf" | "docx" => format!("{name}.{}", b.kind),
+        "latex" => format!("{name}-latex.zip"),
+        _ => return bad("unknown export kind"),
+    });
     if !f.is_file() {
         return (StatusCode::NOT_FOUND, "還沒有匯出").into_response();
     }

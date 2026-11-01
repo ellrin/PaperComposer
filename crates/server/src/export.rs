@@ -348,36 +348,73 @@ pub fn bib_warnings(blg: &str) -> Vec<String> {
 /// Convert to `export/<name>.docx` with Pandoc. A `reference.docx` in the
 /// paper folder (copied from the publisher template) sets the Word styles,
 /// and a `.csl` file there sets the citation style.
+/// Math from packages Pandoc does not know, as what it does (only for
+/// commands the paper does not define itself; Pandoc keeps the first definition).
+const PANDOC_COMPAT: &[(&str, &str)] = &[
+    ("\\Tilde", "[1]{\\tilde{#1}}"),
+    ("\\mathbbmss", "[1]{\\mathbb{#1}}"),
+    ("\\mathbbm", "[1]{\\mathbb{#1}}"),
+    ("\\mathds", "[1]{\\mathbb{#1}}"),
+    ("\\bm", "[1]{\\boldsymbol{#1}}"),
+    ("\\Checkmark", "{\\checkmark}"),
+    ("\\XSolid", "{\\times}"),
+    ("\\degree", "{^\\circ}"),
+    // subfigure / subfig: Pandoc drops these and the images inside them
+    ("\\subfigure", "[2][]{#2}"),
+    ("\\subfloat", "[2][]{#2}"),
+];
+
 pub async fn build_docx(paper: &Path, name: &str, bibs: &[String]) -> Result<Report, String> {
     let start = Instant::now();
     let pandoc = tool("pandoc").ok_or("pandoc-missing")?;
     let dest = export_dir(paper).map_err(|e| e.to_string())?.join(format!("{name}.docx"));
-    let mut c = Command::new(pandoc);
-    c.current_dir(paper).args(["main.tex", "--from=latex", "--to=docx", "--resource-path=."]).arg("-o").arg(&dest);
-    let bibs: Vec<&String> = bibs.iter().filter(|b| paper.join(b).is_file()).collect();
-    if !bibs.is_empty() {
-        c.arg("--citeproc");
-        for b in bibs {
-            c.arg(format!("--bibliography={b}"));
+    let work = cache_dir(name).join("docx");
+    std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let defined = paper::paper_macros(paper);
+    let compat: String = PANDOC_COMPAT
+        .iter()
+        .filter(|(m, _)| !defined.contains_key(*m))
+        .map(|(m, d)| format!("\\providecommand{{{m}}}{d}\n"))
+        .collect();
+    let compat_file = work.join("compat.tex");
+    std::fs::write(&compat_file, compat).map_err(|e| e.to_string())?;
+    let filter = work.join("figures.lua");
+    std::fs::write(&filter, figure_filter(paper).await).map_err(|e| e.to_string())?;
+    let bibs: Vec<PathBuf> = bibs.iter().map(|b| paper.join(b)).filter(|b| b.is_file()).collect();
+    let pandoc_run = |bibs: &[PathBuf]| {
+        let mut c = Command::new(&pandoc);
+        c.current_dir(paper).arg(&compat_file).args(["main.tex", "--from=latex", "--to=docx", "--resource-path=."]).arg("-o").arg(&dest);
+        c.arg(format!("--lua-filter={}", filter.display()));
+        if !bibs.is_empty() {
+            c.arg("--citeproc");
+            for b in bibs {
+                c.arg(format!("--bibliography={}", b.display()));
+            }
+            if let Some(csl) = first_with_ext(paper, "csl") {
+                c.arg(format!("--csl={csl}"));
+            }
         }
-        if let Some(csl) = first_with_ext(paper, "csl") {
-            c.arg(format!("--csl={csl}"));
+        if paper.join("reference.docx").is_file() {
+            c.arg("--reference-doc=reference.docx");
         }
+        c
+    };
+    let mut o = run(&mut pandoc_run(&bibs), 120).await?;
+    // BibTeX shrugs off a missing comma; Pandoc refuses the whole file. Retry
+    // with copies read by our own parser (the author's files stay as they are).
+    if !o.status.success() && String::from_utf8_lossy(&o.stderr).contains("Error reading bibliography") {
+        let mut clean = Vec::new();
+        for b in &bibs {
+            let src = String::from_utf8_lossy(&std::fs::read(b).map_err(|e| e.to_string())?).to_string();
+            let out = work.join(b.file_name().unwrap_or_default());
+            std::fs::write(&out, pc_core::bib::write(&pc_core::bib::parse(&src).0)).map_err(|e| e.to_string())?;
+            clean.push(out);
+        }
+        o = run(&mut pandoc_run(&clean), 120).await?;
     }
-    if paper.join("reference.docx").is_file() {
-        c.arg("--reference-doc=reference.docx");
-    }
-    let o = run(&mut c, 120).await?;
     let stderr = String::from_utf8_lossy(&o.stderr);
     let mut report = Report { seconds: (start.elapsed().as_secs_f64() * 10.0).round() / 10.0, ..Default::default() };
-    for l in stderr.lines().filter(|l| !l.trim().is_empty()).take(20) {
-        let l = l.trim_start_matches("[WARNING] ").to_string();
-        if let Some(k) = l.strip_prefix("Citeproc: citation ").and_then(|r| r.split(' ').next()) {
-            report.undefined_cites.push(k.to_string());
-        } else if !report.warnings.contains(&l) {
-            report.warnings.push(l);
-        }
-    }
+    report.warnings = pandoc_warnings(&stderr, &mut report.undefined_cites);
     if o.status.success() {
         report.ok = true;
         report.file = Some(format!("export/{name}.docx"));
@@ -385,6 +422,110 @@ pub async fn build_docx(paper: &Path, name: &str, bibs: &[String]) -> Result<Rep
         report.errors.push(Problem { message: report.warnings.first().cloned().unwrap_or_else(|| "pandoc 失敗".into()), ..Default::default() });
     }
     Ok(report)
+}
+
+/// Files of the paper folder that are the app's, not the paper's.
+const APP_FILES: &[&str] = &["citations.csv", "main.bbl", "main.tex", "00README.json"];
+
+/// `export/<name>-latex.zip`: a source package that compiles on its own,
+/// as journals and arXiv want it: main.tex with the sections merged back
+/// in, the compiled .bbl, and the class, style, .bib and figure files.
+/// Run after a successful build_pdf, so the .bbl is current.
+pub fn build_latex_zip(paper: &Path, name: &str) -> Result<String, String> {
+    use std::io::Write;
+    let main = std::fs::read_to_string(paper.join("main.tex")).map_err(|e| e.to_string())?;
+    let flat = paper::flatten(paper, paper, &main, &mut Vec::new(), 0);
+    let rel = format!("export/{name}-latex.zip");
+    let dest = export_dir(paper).map_err(|e| e.to_string())?.join(format!("{name}-latex.zip"));
+    let file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let err = |e: zip::result::ZipError| e.to_string();
+    zip.start_file("main.tex", opts).map_err(err)?;
+    zip.write_all(flat.as_bytes()).map_err(|e| e.to_string())?;
+    let bbl = cache_dir(name).join("main.bbl");
+    let bbl = if bbl.is_file() { bbl } else { paper.join("main.bbl") };
+    if let Ok(b) = std::fs::read(&bbl) {
+        zip.start_file("main.bbl", opts).map_err(err)?;
+        zip.write_all(&b).map_err(|e| e.to_string())?;
+    }
+    let mut stack = vec![(paper.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = stack.pop() {
+        for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())?.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            let top = prefix.is_empty();
+            if n.starts_with('.') || (top && (n == "export" || n == "sections" || APP_FILES.contains(&n.as_str())))
+                || paper::BUILD_EXT.iter().any(|x| n.ends_with(&format!(".{x}")))
+            {
+                continue;
+            }
+            let path = format!("{prefix}{n}");
+            if e.path().is_dir() {
+                stack.push((e.path(), format!("{path}/")));
+            } else {
+                zip.start_file(path, opts).map_err(err)?;
+                zip.write_all(&std::fs::read(e.path()).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    zip.finish().map_err(err)?;
+    Ok(rel)
+}
+
+/// Pandoc's stderr in a few readable lines. Its multi-line messages (the
+/// source excerpt with a caret) are folded into one count per kind.
+pub fn pandoc_warnings(stderr: &str, cites: &mut Vec<String>) -> Vec<String> {
+    let (mut math, mut v) = (0, Vec::new());
+    for l in stderr.lines() {
+        // continuation lines of the previous message
+        if l.starts_with(' ') || l.trim().is_empty() {
+            continue;
+        }
+        let l = l.trim_start_matches("[WARNING] ");
+        if let Some(k) = l.strip_prefix("Citeproc: citation ").and_then(|r| r.split(' ').next()) {
+            if !cites.iter().any(|c| c == k) {
+                cites.push(k.to_string());
+            }
+        } else if l.starts_with("Could not convert TeX math") {
+            math += 1;
+        } else if let Some(r) = l.strip_prefix("Could not fetch resource ") {
+            v.push(format!("找不到圖片 {}", r.split(':').next().unwrap_or(r).trim()));
+        } else if !l.contains("rendering as TeX") && !v.iter().any(|x| x == l) && v.len() < 12 {
+            v.push(l.to_string());
+        }
+    }
+    if math > 0 {
+        v.insert(0, format!("{math} 個方程式無法轉成 Word 公式，保留 LaTeX 原文"));
+    }
+    v
+}
+
+/// A Pandoc filter that points every figure at an image Word can show:
+/// found the way LaTeX finds it (graphicspath, missing extension), PDF and
+/// EPS figures converted to PNG.
+async fn figure_filter(paper: &Path) -> String {
+    let mut tex = std::fs::read_to_string(paper.join("main.tex")).unwrap_or_default();
+    for f in paper::section_files(paper) {
+        tex += &std::fs::read_to_string(paper.join("sections").join(f)).unwrap_or_default();
+    }
+    let cache = dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("PaperComposer/figures");
+    let mut map = String::new();
+    let mut seen = Vec::new();
+    for part in tex.split("\\includegraphics").skip(1) {
+        let rest = part.trim_start();
+        let rest = if rest.starts_with('[') { rest.find(']').map(|i| &rest[i + 1..]).unwrap_or(rest) } else { rest };
+        let Some(arg) = rest.trim_start().strip_prefix('{').and_then(|r| r.split('}').next()) else { continue };
+        let arg = arg.trim();
+        if seen.iter().any(|x: &String| x == arg) {
+            continue;
+        }
+        seen.push(arg.to_string());
+        let Some(file) = crate::preview::resolve_figure(paper, arg) else { continue };
+        let Some((img, _)) = crate::preview::figure_image(&file, &cache).await else { continue };
+        let lua = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        map += &format!("  [\"{}\"] = \"{}\",\n", lua(arg), lua(&img.to_string_lossy()));
+    }
+    format!("local map = {{\n{map}}}\nfunction Image(el)\n  local to = map[el.src]\n  if to then el.src = to end\n  return el\nend\n")
 }
 
 fn first_with_ext(dir: &Path, ext: &str) -> Option<String> {
@@ -475,6 +616,14 @@ Output written on /tmp/b/main.pdf (5 pages, 12345 bytes).
         assert_eq!(para_at("02-method.tex", text, 6), Some(1));
         assert_eq!(para_at("02-method.tex", text, 4), Some(0));
         assert_eq!(para_at("02-method.tex", text, 2), None);
+    }
+
+    #[test]
+    fn folds_pandoc_warnings() {
+        let err = "[WARNING] Could not convert TeX math \\underset{x}\\mathop{y}, rendering as TeX:\n  ^{x}\n       ^\n[WARNING] Could not convert TeX math a, rendering as TeX:\n[WARNING] Could not fetch resource sim_9: replacing image with description\n[WARNING] Citeproc: citation smith2020 not found\n";
+        let mut cites = vec![];
+        assert_eq!(pandoc_warnings(err, &mut cites), ["2 個方程式無法轉成 Word 公式，保留 LaTeX 原文", "找不到圖片 sim_9"]);
+        assert_eq!(cites, ["smith2020"]);
     }
 
     #[test]

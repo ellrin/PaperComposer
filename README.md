@@ -149,10 +149,12 @@ tlmgr search --global --file /xxx.sty
 
 ## 匯出
 
-上方的下載圖示：點一下輸出 PDF（或按 Ctrl+P），滑鼠移上去可選 Word。檔案放在 `papers/<論文>/export/`，資料夾內附 `.gitignore`，**匯出的檔案不會上 git**；編譯的中間檔放在系統的快取資料夾，不會弄亂論文資料夾。
+上方的下載圖示：點一下輸出 PDF（或按 Ctrl+P），滑鼠移上去可選 Word 或 LaTeX。檔案放在 `papers/<論文>/export/`，資料夾內附 `.gitignore`，**匯出的檔案不會上 git**；編譯的中間檔放在系統的快取資料夾，不會弄亂論文資料夾。
 
 - **PDF**：用期刊自己的 class 編譯（pdflatex；`main.tex` 用了 `fontspec`、`xeCJK` 或寫了 `% !TEX program = xelatex` 時改用 XeLaTeX），自動跑 BibTeX／Biber 並重編到交互參照穩定。編譯前會重新產生這篇論文的 `.bib`。成功時顯示頁數；失敗時列出錯誤、出錯的原文、建議做法，點位置直接跳到那一段。找不到的引用、標籤和超出版面的行數也會列出。
 - **Word**：需要 [Pandoc](https://pandoc.org/installing.html)（macOS：`brew install pandoc`）。引用依論文資料夾裡的 `.csl` 排版（從模板建立的論文會一起帶過來：IEEE、CVPR 用 `ieee.csl`，Springer Nature 用 `springer-basic-brackets.csl`，LNCS 用 `springer-lecture-notes-in-computer-science.csl`，取自 [CSL styles](https://github.com/citation-style-language/styles)）；有 `reference.docx` 時套用其中的字型與標題樣式。投稿請以 PDF 為準，Word 適合給共同作者修改。
+  轉換前會處理 Pandoc 的常見困難：PDF／EPS 圖與省略副檔名的圖轉成 PNG；`subfigure`、`subfig`、`bbm`、`dsfont`、`mathabx` 等套件的指令給相容定義（論文自己定義的優先）；`.bib` 有語法錯誤時改用 App 解析出的乾淨副本（原檔不動）。以 4 篇 arXiv 論文實測，方程式轉成 Word 原生公式、表格、圖片、引用都在；少數寫法不標準的數學式（例如 `\underset{…}\mathop{…}` 第二個參數沒加大括號）會保留 LaTeX 原文並列在警告裡。
+- **LaTeX**：產生 `export/<論文>-latex.zip`，可直接上傳投稿系統、arXiv 或 Overleaf：章節併回單一 `main.tex`，附上編譯產生的 `.bbl`、class／樣式檔、`.bib` 與圖片，不含 App 自己的檔案。會先完整編譯一次，確定能編譯才打包。實測 7 篇（4 篇 arXiv 論文與 3 個期刊範本）解壓到空資料夾單獨編譯，頁數與 App 輸出的 PDF 相同。
 
 ## 連接模型
 
@@ -221,7 +223,7 @@ scripts/            Git hooks
 | GET | `/api/papers/{name}` | 論文各章節與段落 |
 | PUT | `/api/papers/{name}/sections/{file}` `{ title, paragraphs }` | 儲存章節（一句一行） |
 | GET / PUT | `/api/tables/{file}` | 讀寫資料庫 CSV（句型、片語、用詞、規則、範例、公式） |
-| POST | `/api/papers/{name}/export` `{ kind: "pdf" \| "docx" }` | 匯出：頁數、錯誤（含位置）、找不到的引用與標籤 |
+| POST | `/api/papers/{name}/export` `{ kind: "pdf" \| "docx" \| "latex" }` | 匯出：頁數、錯誤（含位置）、找不到的引用與標籤 |
 | POST | `/api/papers/{name}/export/open` `{ kind, reveal }` | 開啟匯出的檔案，或在資料夾中顯示 |
 | POST | `/api/papers/import?name=` （本文為 .zip／.tar.gz／.tex） | 匯入現有的 LaTeX 專案 |
 | POST | `/api/papers/import-arxiv` `{ id, name? }` | 從 arXiv 匯入原始檔 |

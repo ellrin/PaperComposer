@@ -690,6 +690,7 @@ const MENUS = {
   export: () => [
     ["PDF　Ctrl+P", () => PCExport.run("pdf")],
     ["Word", () => PCExport.run("docx")],
+    ["LaTeX（zip）", () => PCExport.run("latex")],
     "-",
     ["在資料夾中顯示", PCExport.reveal],
   ],
