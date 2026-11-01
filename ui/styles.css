@@ -741,3 +741,9 @@ table.plan .src { color: var(--faint); font-size: 11px; }
 .paper .tex-bib ol { list-style: none; padding: 0; margin: 0; font-size: .82em; line-height: 1.45; }
 .paper .tex-bib li { display: grid; grid-template-columns: auto 1fr; gap: 8px; margin-bottom: 5px; text-align: left; }
 .paper .tex-bib .bib-n { color: #555; min-width: 2.2em; }
+.paper .tex-front [data-field] { cursor: text; border-radius: 3px; }
+.paper .tex-front [data-field]:hover { background: #0000000a; }
+.paper .tex-front .author-item { display: contents; }
+.paper .tex-front .empty { color: #9a9aa3; font-style: italic; }
+.paper .field-edit { width: 100%; font: 13px/1.6 var(--mono); color: inherit; background: var(--paper); border: 1px solid #d6d6da; border-radius: 4px; padding: 8px; resize: none; overflow: hidden; text-align: left; }
+.paper .tex-front .author-item:has(.field-edit) { display: block; flex-basis: 100%; }

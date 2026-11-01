@@ -9,6 +9,7 @@ pub mod bib;
 pub mod check;
 pub mod compose;
 pub mod decompose;
+pub mod front;
 pub mod paper;
 pub mod table;
 pub mod vcs;

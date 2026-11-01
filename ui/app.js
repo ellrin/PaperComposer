@@ -70,7 +70,7 @@ const rank = (s) => ({ info: 1, warning: 2, error: 3 }[s] ?? 0);
 async function openPaper(name) {
   try {
     const res = await api(`/api/papers/${encodeURIComponent(name)}`);
-    state.paper = { name, sections: res.sections, front: res.front ?? "", back: res.back ?? "", bibliography: res.bibliography ?? [] };
+    state.paper = { name, sections: res.sections, front: res.front ?? "", back: res.back ?? "", fields: res.fields ?? [], bibliography: res.bibliography ?? [] };
     PCTex.setMacros(res.macros ?? {});
     PCTex.setNumbers(res.numbers);
     PCTex.setFigureBase(`/api/papers/${encodeURIComponent(name)}/figure`);
@@ -115,6 +115,14 @@ function renderNav() {
   nav.innerHTML = "";
   if (!state.paper) { nav.append(el("li", "empty", "從「檔案」開啟論文")); return; }
   const open = store.get("pc.navOpen", {});
+  if (state.paper.front?.trim()) {
+    const li = el("li", "sec front");
+    const head = el("button");
+    head.append(el("span", "caret", ""), el("span", "", "標題與摘要"));
+    head.onclick = () => document.getElementById("front")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    li.append(head);
+    nav.append(li);
+  }
   sections().forEach((sec, si) => {
     const li = el("li", "sec");
     li.dataset.open = String(open[sec.file] !== false);
@@ -178,7 +186,12 @@ function renderPaper() {
   if (!state.paper) return;
   PCTex.resetCounters();
   // main.tex around the sections: title block first, back matter and references last
-  if (state.paper.front.trim()) paper.append(PCTex.frontNode(state.paper.front));
+  if (state.paper.front.trim()) {
+    const front = PCTex.frontNode(state.paper.front);
+    front.id = "front";
+    front.querySelectorAll("[data-field]").forEach((n) => (n.ondblclick = (e) => { e.stopPropagation(); editField(n); }));
+    paper.append(front);
+  }
   sections().forEach((sec, si) => {
     const h = el("h2");
     h.append(PCTex.render(sec.title));
@@ -276,6 +289,33 @@ function edit(p, si, pi) {
   };
   p.replaceChildren(ta);
   p.ondblclick = null;
+  fit();
+  ta.focus();
+}
+
+// Edit one field of the title block in place: its LaTeX, saved into main.tex.
+function editField(n) {
+  const field = n.dataset.field, index = +n.dataset.index;
+  const cur = state.paper.fields.find((f) => f.field === field && f.index === index)?.value ?? "";
+  const ta = document.createElement("textarea");
+  ta.className = "field-edit";
+  ta.value = cur;
+  const fit = () => { ta.style.height = "auto"; ta.style.height = ta.scrollHeight + "px"; };
+  ta.oninput = fit;
+  ta.onkeydown = (e) => { if (e.key === "Escape" || (e.key === "Enter" && (e.metaKey || e.ctrlKey))) ta.blur(); };
+  ta.onblur = async () => {
+    const v = ta.value.trim();
+    if (v !== cur.trim()) {
+      try {
+        const r = await api(`/api/papers/${encodeURIComponent(state.paper.name)}/front`, { field, index, value: v }, "PUT");
+        Object.assign(state.paper, { front: r.front, back: r.back, fields: r.fields });
+        refreshGit();
+      } catch (e) { flash(`儲存失敗：${e.message}`, 6000); }
+    }
+    render();
+  };
+  n.replaceChildren(ta);
+  n.ondblclick = null;
   fit();
   ta.focus();
 }

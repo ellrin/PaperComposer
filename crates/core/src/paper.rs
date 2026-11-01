@@ -294,7 +294,7 @@ pub fn create_paper(papers: &Path, name: &str) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir.join("sections")).map_err(io)?;
     let inputs: String = BLANK_SECTIONS.iter().map(|(f, _)| format!("\\input{{sections/{f}}}\n")).collect();
     let main = format!(
-        "\\documentclass{{article}}\n\\usepackage{{amsmath,amssymb}}\n\n\\title{{{name}}}\n\\author{{}}\n\n\\begin{{document}}\n\\maketitle\n\n{inputs}\n\\bibliographystyle{{plain}}\n\\bibliography{{refs}}\n\\end{{document}}\n"
+        "\\documentclass{{article}}\n\\usepackage{{amsmath,amssymb}}\n\n\\title{{{name}}}\n\\author{{}}\n\n\\begin{{document}}\n\\maketitle\n\n\\begin{{abstract}}\n\\end{{abstract}}\n\n{inputs}\n\\bibliographystyle{{plain}}\n\\bibliography{{refs}}\n\\end{{document}}\n"
     );
     write_atomic(&dir.join("main.tex"), &main).map_err(io)?;
     for (f, title) in BLANK_SECTIONS {

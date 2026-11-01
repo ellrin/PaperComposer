@@ -1343,19 +1343,42 @@ fn bib_files(main: &str) -> Vec<String> {
 async fn get_paper(State(s): State<Shared>, AxPath(name): AxPath<String>) -> impl IntoResponse {
     match paper_dir(&s, &name).await {
         Ok(dir) => {
-            let (front, back) = preview::front_back(&std::fs::read_to_string(dir.join("main.tex")).unwrap_or_default());
+            let main = std::fs::read_to_string(dir.join("main.tex")).unwrap_or_default();
+            let (front, back) = preview::front_back(&main);
             Json(serde_json::json!({
             "sections": paper::load_paper(&dir),
             "macros": paper::paper_macros(&dir),
             "numbers": preview::numbers(&dir, &export::cache_dir(&name)),
             "front": front,
             "back": back,
+            "fields": pc_core::front::fields(&main),
             "bibliography": preview::bibliography(&dir, &export::cache_dir(&name)),
         }))
         .into_response()
         }
         Err(r) => r,
     }
+}
+
+#[derive(Deserialize)]
+struct FrontEdit {
+    field: String,
+    #[serde(default)]
+    index: usize,
+    value: String,
+}
+
+/// Change one field of the title block (title, author, affil, abstract, keywords).
+async fn put_front(State(s): State<Shared>, AxPath(name): AxPath<String>, Json(b): Json<FrontEdit>) -> impl IntoResponse {
+    let dir = match paper_dir(&s, &name).await { Ok(d) => d, Err(r) => return r };
+    let path = dir.join("main.tex");
+    let main = match std::fs::read_to_string(&path) { Ok(m) => m, Err(e) => return bad(&e.to_string()) };
+    let out = match pc_core::front::set_field(&main, &b.field, b.index, &b.value) { Ok(o) => o, Err(e) => return bad(&e) };
+    if let Err(e) = paper::write_atomic(&path, &out) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    let (front, back) = preview::front_back(&out);
+    Json(serde_json::json!({ "front": front, "back": back, "fields": pc_core::front::fields(&out) })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1896,6 +1919,7 @@ pub fn router(paths: Paths) -> Router {
         .route("/api/papers/{name}/bib", post(paper_bib))
         .route("/api/papers/{name}/export", post(export_paper))
         .route("/api/papers/{name}/figure", get(paper_figure))
+        .route("/api/papers/{name}/front", put(put_front))
         .route("/api/papers/{name}/export/open", post(open_export))
         .route("/api/refs", get(list_refs))
         .route("/api/refs/tags", get(ref_tags))

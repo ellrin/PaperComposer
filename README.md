@@ -145,6 +145,8 @@ tlmgr search --global --file /xxx.sty
 
 以 4 篇 arXiv 論文實測（NeurIPS〈Attention Is All You Need〉、IEEE TMI、IEEE TSP、Springer BIT），匯出的 PDF 頁數與 arXiv 版完全相同，逐頁比對只有字型版本造成的細微差異。
 
+**標題、作者、單位、摘要、關鍵字**也在頁面上雙擊編輯（左側導覽最上方的「標題與摘要」可跳到這裡）。編輯框裡是該欄位的 LaTeX 原文，存檔時只替換那一段，`main.tex` 其他內容一字不動；IEEE（`abstract`、`IEEEkeywords` 環境）與 Springer Nature（`\abstract{…}`、`\keywords{…}`、每人一個 `\author*[1]{…}`）的寫法都支援，註解掉的不算。還沒有摘要的論文會顯示「雙擊新增摘要」，寫入 `\maketitle` 之後。
+
 **編輯畫面是預覽，PDF 才是成品**：編輯畫面用 KaTeX 與 App 自己的轉換呈現論文（方程式、圖片、表格、清單、定理、演算法、標題摘要、參考文獻），以便直接在頁面上修改，外觀接近但不保證與 PDF 完全相同。匯出 PDF 一律用期刊的 class 與真正的 LaTeX 編譯。編譯過一次後，畫面上的方程式、圖表、章節與引用編號會改用 LaTeX 算出的實際編號（讀取 `.aux`）。PDF 與 EPS 圖片用 Ghostscript（macOS 沒有時用內建的 `sips`）轉成預覽圖。
 
 ## 匯出
@@ -227,6 +229,7 @@ scripts/            Git hooks
 | POST | `/api/papers/{name}/export/open` `{ kind, reveal }` | 開啟匯出的檔案，或在資料夾中顯示 |
 | POST | `/api/papers/import?name=` （本文為 .zip／.tar.gz／.tex） | 匯入現有的 LaTeX 專案 |
 | POST | `/api/papers/import-arxiv` `{ id, name? }` | 從 arXiv 匯入原始檔 |
+| PUT | `/api/papers/{name}/front` `{ field, index, value }` | 修改標題區的欄位（title、author、affil、abstract、keywords） |
 | GET | `/api/papers/{name}/figure?path=` | 圖片預覽（PDF／EPS 轉 PNG） |
 | POST | `/api/decompose` `{ text, section }` | 把句子或段落拆成句型與片語建議 |
 | GET | `/api/claude` | Claude 連線狀態 |

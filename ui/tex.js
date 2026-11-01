@@ -682,31 +682,41 @@ window.PCTex = (() => {
   }
 
   /** Title block and everything else before the first section. */
+  // Mark an element as the editable field `field` number `index` of main.tex.
+  const mark = (n, field, index) => { n.dataset.field = field; n.dataset.index = index; return n; };
+
+  /** Title block and everything else before the first section. Elements
+   *  holding a field of main.tex carry data-field/data-index for editing. */
   function frontNode(src) {
     let t = stripComments(src);
     const box = el("header", "tex-front");
     const title = extract(t, "title"); t = title.rest;
-    title.items.forEach((x) => { const h = el("h1", "title"); h.append(render(x.arg)); box.append(h); });
+    title.items.forEach((x, i) => { const h = mark(el("h1", "title"), "title", i); h.append(render(x.arg)); box.append(h); });
     const authors = el("div", "authors");
+    let ai = 0;
     for (const cmd of ["author", "IEEEauthorblockN"]) {
       const a = extract(t, cmd); t = a.rest;
       a.items.forEach((x) => {
-        // \\and separates authors; \\\\ breaks lines inside one (name, affiliation, email)
+        // one \author may hold several people: \and separates them, \\ breaks lines inside one
+        const item = mark(el("span", "author-item"), "author", ai++);
         x.arg.split(/\\(?:and|AND|And)(?![a-zA-Z])/).forEach((who) => {
           const lines = who.split(/\\\\(?:\[[^\]]*\])?/).map((l) => l.trim()).filter((l) => l.replace(/[\s,]/g, ""));
           if (!lines.length) return;
           const block = el("div", "author");
           lines.forEach((l, i) => { const d = el("div", i ? "line" : "name"); d.append(render(l.replace(/^,\s*/, ""))); block.append(d); });
           if (x.opt && /^[\d,\s*]+$/.test(x.opt)) block.firstChild.append(el("sup", "", x.opt));
-          authors.append(block);
+          item.append(block);
         });
+        if (!item.children.length) item.append(el("div", "author empty", "雙擊輸入作者"));
+        authors.append(item);
       });
     }
     if (authors.children.length) box.append(authors);
+    let fi = 0;
     for (const cmd of ["affil", "address", "institute", "IEEEauthorblockA"]) {
       const a = extract(t, cmd); t = a.rest;
       a.items.forEach((x) => {
-        const d = el("div", "affil");
+        const d = mark(el("div", "affil"), "affil", fi++);
         if (x.opt) d.append(el("sup", "", x.opt.replace(/\*/g, "")));
         d.append(render(x.arg.replace(/\\\\/g, ", ")));
         box.append(d);
@@ -715,6 +725,9 @@ window.PCTex = (() => {
     const emails = extract(t, "email"); t = emails.rest;
     if (emails.items.length) box.append(el("div", "affil", emails.items.map((x) => x.arg).join(", ")));
     box.append(render(t));
+    box.querySelectorAll(".tex-abstract").forEach((n, i) => mark(n, "abstract", i));
+    box.querySelectorAll(".tex-keywords").forEach((n, i) => mark(n, "keywords", i));
+    if (!box.querySelector(".tex-abstract")) box.append(mark(el("div", "tex-abstract empty", "雙擊新增摘要"), "abstract", 0));
     return box;
   }
 
